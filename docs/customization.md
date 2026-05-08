@@ -16,7 +16,7 @@ The `openspec/config.yaml` file is the easiest way to customize OpenSpec for you
 
 - **Set a default schema** - Skip `--schema` on every command
 - **Inject project context** - AI sees your tech stack, conventions, etc.
-- **Add per-artifact rules** - Custom rules for specific artifacts
+- **Add per-target rules** - Custom rules for specific artifacts and workflow targets
 
 ### Quick Setup
 
@@ -43,6 +43,10 @@ rules:
   specs:
     - Use Given/When/Then format
     - Reference existing patterns before inventing new ones
+  apply:
+    - Use sub-agents only when explicitly allowed
+  archive:
+    - Update follow-up docs after archiving
 ```
 
 ### How It Works

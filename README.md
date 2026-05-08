@@ -1,28 +1,9 @@
-<p align="center">
-  <a href="https://github.com/Fission-AI/OpenSpec">
-    <picture>
-      <source srcset="assets/openspec_bg.png">
-      <img src="assets/openspec_bg.png" alt="OpenSpec logo">
-    </picture>
-  </a>
-</p>
 
-<p align="center">
-  <a href="https://github.com/Fission-AI/OpenSpec/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/Fission-AI/OpenSpec/actions/workflows/ci.yml/badge.svg" /></a>
-  <a href="https://www.npmjs.com/package/@fission-ai/openspec"><img alt="npm version" src="https://img.shields.io/npm/v/@fission-ai/openspec?style=flat-square" /></a>
-  <a href="./LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/License-MIT-blue.svg?style=flat-square" /></a>
-  <a href="https://discord.gg/YctCnvvshC"><img alt="Discord" src="https://img.shields.io/discord/1411657095639601154?style=flat-square&logo=discord&logoColor=white&label=Discord&suffix=%20online" /></a>
-</p>
 
-<details>
-<summary><strong>The most loved spec framework.</strong></summary>
+> [!IMPORTANT]
+> This package is a community-maintained fork of the official [Fission-AI/OpenSpec](https://github.com/Fission-AI/OpenSpec) project, with additional behavior and modifications that may differ from upstream.
+> It is not an official OpenSpec release from Fission AI.
 
-[![Stars](https://img.shields.io/github/stars/Fission-AI/OpenSpec?style=flat-square&label=Stars)](https://github.com/Fission-AI/OpenSpec/stargazers)
-[![Downloads](https://img.shields.io/npm/dm/@fission-ai/openspec?style=flat-square&label=Downloads/mo)](https://www.npmjs.com/package/@fission-ai/openspec)
-[![Contributors](https://img.shields.io/github/contributors/Fission-AI/OpenSpec?style=flat-square&label=Contributors)](https://github.com/Fission-AI/OpenSpec/graphs/contributors)
-
-</details>
-<p></p>
 Our philosophy:
 
 ```text
@@ -41,6 +22,35 @@ Our philosophy:
 <p align="center">
   Follow <a href="https://x.com/0xTab">@0xTab on X</a> for updates · Join the <a href="https://discord.gg/YctCnvvshC">OpenSpec Discord</a> for help and questions.
 </p>
+
+## What's different in this fork?
+
+This fork keeps the upstream OpenSpec workflow, but extends project config injection so workflow guidance can be customized beyond artifact generation.
+
+- `openspec/config.yaml` `context` is injected into artifact instructions and also into the `apply` and `archive` workflow instruction surfaces.
+- `rules` supports both artifact IDs and reserved workflow targets: `apply` and `archive`.
+- `rules.apply` can guide implementation behavior, such as sub-agent usage, testing preferences, or repo-specific delivery rules.
+- `rules.archive` can add post-archive guidance, such as documentation cleanup, knowledge base updates, or handoff steps.
+- Archive guidance remains additive: this fork does not change archive readiness checks, warnings, or enforcement semantics.
+- Existing artifact-scoped config continues to work, so older `proposal` / `specs` / `design` / `tasks` rules remain compatible.
+
+Example:
+
+```yaml
+schema: spec-driven
+
+context: |
+  Monorepo with pnpm workspaces.
+  Prefer minimal, targeted changes.
+
+rules:
+  proposal:
+    - Describe user-visible behavior first
+  apply:
+    - Use sub-agents only when the task clearly benefits from parallel work
+  archive:
+    - Update internal docs after archiving
+```
 
 <!-- TODO: Add GIF demo of /opsx:propose → /opsx:archive workflow -->
 
@@ -84,7 +94,7 @@ AI:  Archived to openspec/changes/archive/2025-01-23-add-dark-mode/
 Install OpenSpec globally:
 
 ```bash
-npm install -g @fission-ai/openspec@latest
+npm install -g openspec-plus
 ```
 
 Then navigate to your project directory and initialize:
@@ -144,7 +154,7 @@ AI coding assistants are powerful but unpredictable when requirements live only 
 **Upgrade the package**
 
 ```bash
-npm install -g @fission-ai/openspec@latest
+npm install -g openspec-plus@latest
 ```
 
 **Refresh agent instructions**

@@ -423,6 +423,55 @@ describe('artifact-workflow CLI commands', () => {
       expect(typeof json.contextFiles).toBe('object');
       expect(json.contextFiles.proposal).toEqual([expectedProposalPath]);
       expect(json.contextFiles.specs).toEqual([expectedSpecPath]);
+      expect(json.applyRequires).toEqual(['tasks']);
+      expect(json.tracks).toBe('tasks.md');
+    });
+
+    it('injects context and apply rules into apply instructions', async () => {
+      await fs.writeFile(
+        path.join(tempDir, 'openspec', 'config.yaml'),
+        `schema: spec-driven
+context: |
+  Shared implementation context
+rules:
+  apply:
+    - Use sub-agents only when explicitly allowed
+  proposal:
+    - Proposal-only rule
+`
+      );
+      await createTestChange('apply-config', ['proposal', 'design', 'specs', 'tasks']);
+
+      const result = await runCLI(
+        ['instructions', 'apply', '--change', 'apply-config', '--json'],
+        { cwd: tempDir }
+      );
+      expect(result.exitCode).toBe(0);
+
+      const json = JSON.parse(result.stdout);
+      expect(json.context).toBe('Shared implementation context');
+      expect(json.rules).toEqual(['Use sub-agents only when explicitly allowed']);
+    });
+
+    it('surfaces unknown workflow rule targets to apply callers', async () => {
+      await fs.writeFile(
+        path.join(tempDir, 'openspec', 'config.yaml'),
+        `schema: spec-driven
+rules:
+  verify:
+    - Invalid workflow rule target
+`
+      );
+      await createTestChange('apply-invalid-rules', ['proposal', 'design', 'specs', 'tasks']);
+
+      const result = await runCLI(
+        ['instructions', 'apply', '--change', 'apply-invalid-rules'],
+        { cwd: tempDir }
+      );
+      expect(result.exitCode).toBe(1);
+      const output = getOutput(result);
+      expect(output).toContain('Unknown rule target in rules: "verify"');
+      expect(output).toContain('Valid targets for schema "spec-driven": apply, archive, design, proposal, specs, tasks');
     });
 
     it('resolves single-star glob artifacts consistently between status and apply', async () => {
@@ -631,6 +680,54 @@ artifacts:
       expect(json.schemaName).toBe('no-apply-full');
       expect(json.state).toBe('ready');
       expect(json.instruction).toContain('All required artifacts complete');
+    });
+  });
+
+  describe('instructions archive command', () => {
+    it('outputs JSON for archive instructions with injected context and rules', async () => {
+      await fs.writeFile(
+        path.join(tempDir, 'openspec', 'config.yaml'),
+        `schema: spec-driven
+context: |
+  Shared archive context
+rules:
+  archive:
+    - Update the knowledge base after archive
+`
+      );
+      const changeDir = await createTestChange('archive-config', ['proposal', 'design', 'specs', 'tasks']);
+      await fs.writeFile(
+        path.join(changeDir, 'tasks.md'),
+        '## Tasks\n- [x] Task 1\n- [ ] Task 2'
+      );
+      await fs.mkdir(path.join(changeDir, 'specs', 'feature-a'), { recursive: true });
+      await fs.writeFile(path.join(changeDir, 'specs', 'feature-a', 'spec.md'), '## MODIFIED Requirements\n');
+
+      const result = await runCLI(
+        ['instructions', 'archive', '--change', 'archive-config', '--json'],
+        { cwd: tempDir }
+      );
+      expect(result.exitCode).toBe(0);
+
+      const json = JSON.parse(result.stdout);
+      expect(json.changeName).toBe('archive-config');
+      expect(json.context).toBe('Shared archive context');
+      expect(json.rules).toEqual(['Update the knowledge base after archive']);
+      expect(json.status.completedTasks).toBe(1);
+      expect(json.status.incompleteTasks).toBe(1);
+      expect(json.status.hasDeltaSpecs).toBe(true);
+    });
+
+    it('preserves archive guidance without workflow rules', async () => {
+      await createTestChange('archive-no-rules', ['proposal', 'design', 'specs', 'tasks']);
+
+      const result = await runCLI(
+        ['instructions', 'archive', '--change', 'archive-no-rules'],
+        { cwd: tempDir }
+      );
+      expect(result.exitCode).toBe(0);
+      expect(result.stdout).toContain('## Archive: archive-no-rules');
+      expect(result.stdout).not.toContain('<rules>');
     });
   });
 

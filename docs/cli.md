@@ -616,7 +616,7 @@ openspec instructions [artifact] [options]
 
 | Argument | Required | Description |
 |----------|----------|-------------|
-| `artifact` | No | Artifact ID: `proposal`, `specs`, `design`, `tasks`, or `apply` |
+| `artifact` | No | Target ID: artifact (`proposal`, `specs`, `design`, `tasks`) or workflow target (`apply`, `archive`) |
 
 **Options:**
 
@@ -626,7 +626,9 @@ openspec instructions [artifact] [options]
 | `--schema <name>` | Schema override |
 | `--json` | Output as JSON |
 
-**Special case:** Use `apply` as the artifact to get task implementation instructions.
+**Special cases:**
+- Use `apply` to get task implementation instructions
+- Use `archive` to get archive-readiness guidance before running `openspec archive`
 
 **Examples:**
 
@@ -646,10 +648,10 @@ openspec instructions design --change add-dark-mode --json
 
 **Output includes:**
 
-- Template content for the artifact
+- Template content for the selected artifact target
 - Project context from config
-- Content from dependency artifacts
-- Per-artifact rules from config
+- Content from dependency artifacts when applicable
+- Per-target rules from config, including reserved workflow targets like `apply` and `archive`
 
 ---
 

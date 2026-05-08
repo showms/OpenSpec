@@ -6,6 +6,8 @@ import {
   readProjectConfig,
   validateConfigRules,
   suggestSchemas,
+  resolveInstructionConfig,
+  RESERVED_WORKFLOW_RULE_TARGETS,
 } from '../../src/core/project-config.js';
 
 describe('project-config', () => {
@@ -483,33 +485,38 @@ rules:
   });
 
   describe('validateConfigRules', () => {
-    it('should return no warnings for valid artifact IDs', () => {
+    it('should return no warnings for valid artifact IDs and reserved workflow targets', () => {
       const rules = {
         proposal: ['Rule 1'],
         specs: ['Rule 2'],
         design: ['Rule 3'],
+        apply: ['Rule 4'],
+        archive: ['Rule 5'],
       };
       const validIds = new Set(['proposal', 'specs', 'design', 'tasks']);
 
       const warnings = validateConfigRules(rules, validIds, 'spec-driven');
 
       expect(warnings).toEqual([]);
+      expect(RESERVED_WORKFLOW_RULE_TARGETS).toEqual(['apply', 'archive']);
     });
 
-    it('should warn about unknown artifact IDs', () => {
+    it('should warn about unknown rule targets', () => {
       const rules = {
         proposal: ['Rule 1'],
-        testplan: ['Rule 2'], // Invalid
-        documentation: ['Rule 3'], // Invalid
+        testplan: ['Rule 2'],
+        documentation: ['Rule 3'],
       };
       const validIds = new Set(['proposal', 'specs', 'design', 'tasks']);
 
       const warnings = validateConfigRules(rules, validIds, 'spec-driven');
 
       expect(warnings).toHaveLength(2);
-      expect(warnings[0]).toContain('Unknown artifact ID in rules: "testplan"');
-      expect(warnings[0]).toContain('Valid IDs for schema "spec-driven": design, proposal, specs, tasks');
-      expect(warnings[1]).toContain('Unknown artifact ID in rules: "documentation"');
+      expect(warnings[0]).toContain('Unknown rule target in rules: "testplan"');
+      expect(warnings[0]).toContain(
+        'Valid targets for schema "spec-driven": apply, archive, design, proposal, specs, tasks'
+      );
+      expect(warnings[1]).toContain('Unknown rule target in rules: "documentation"');
     });
 
     it('should return warnings for all unknown artifact IDs', () => {
@@ -532,6 +539,45 @@ rules:
       const warnings = validateConfigRules(rules, validIds, 'spec-driven');
 
       expect(warnings).toEqual([]);
+    });
+  });
+
+  describe('resolveInstructionConfig', () => {
+    it('should resolve context and reserved workflow rules for apply', () => {
+      const resolved = resolveInstructionConfig(
+        {
+          schema: 'spec-driven',
+          context: 'Shared context',
+          rules: {
+            apply: ['Use sub-agents only when allowed'],
+            proposal: ['Artifact-only rule'],
+          },
+        },
+        'apply'
+      );
+
+      expect(resolved).toEqual({
+        context: 'Shared context',
+        rules: ['Use sub-agents only when allowed'],
+      });
+    });
+
+    it('should return undefined rules when target has no matching entry', () => {
+      const resolved = resolveInstructionConfig(
+        {
+          schema: 'spec-driven',
+          context: 'Shared context',
+          rules: {
+            proposal: ['Artifact-only rule'],
+          },
+        },
+        'archive'
+      );
+
+      expect(resolved).toEqual({
+        context: 'Shared context',
+        rules: undefined,
+      });
     });
   });
 

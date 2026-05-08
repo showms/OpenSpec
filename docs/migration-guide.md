@@ -67,7 +67,7 @@ One file requires manual migration:
 
 The old `project.md` was passive—agents might read it, might not, might forget what they read. We found reliability was inconsistent.
 
-The new `config.yaml` context is **actively injected into every OpenSpec planning request**. This means your project conventions, tech stack, and rules are always present when the AI is creating artifacts. Higher reliability.
+The new `config.yaml` context is **actively injected into every OpenSpec planning and workflow request**. This means your project conventions, tech stack, and rules are present when the AI is creating artifacts and when it is guiding apply/archive actions. Higher reliability.
 
 **The tradeoff:**
 
@@ -160,7 +160,7 @@ The `--force` flag skips prompts and auto-accepts cleanup.
 
 ## Migrating project.md to config.yaml
 
-The old `openspec/project.md` was a freeform markdown file for project context. The new `openspec/config.yaml` is structured and—critically—**injected into every planning request** so your conventions are always present when the AI works.
+The old `openspec/project.md` was a freeform markdown file for project context. The new `openspec/config.yaml` is structured and—critically—**injected into artifact instructions plus apply/archive workflow guidance** so your conventions are always present when the AI works.
 
 ### Before (project.md)
 
@@ -204,13 +204,13 @@ rules:
 | project.md | config.yaml |
 |------------|-------------|
 | Freeform markdown | Structured YAML |
-| One blob of text | Separate context and per-artifact rules |
-| Unclear when it's used | Context appears in ALL artifacts; rules appear in matching artifacts only |
+| One blob of text | Separate context and per-target rules |
+| Unclear when it's used | Context appears in artifact, apply, and archive instructions; rules appear only for the matching artifact or workflow target |
 | No schema selection | Explicit `schema:` field sets default workflow |
 
 ### What to Keep, What to Drop
 
-When migrating, be selective. Ask yourself: "Does the AI need this for *every* planning request?"
+When migrating, be selective. Ask yourself: "Does the AI need this across artifact creation and apply/archive guidance?"
 
 **Good candidates for `context:`**
 - Tech stack (languages, frameworks, databases)
@@ -242,13 +242,17 @@ When migrating, be selective. Ask yourself: "Does the AI need this for *every* p
      Focus on what the AI genuinely needs to know.
    ```
 
-3. **Add per-artifact rules** (optional):
+3. **Add per-target rules** (optional):
    ```yaml
    rules:
      proposal:
        - Your proposal-specific guidance
      specs:
        - Your spec-writing rules
+     apply:
+       - Your implementation guidance
+     archive:
+       - Your post-archive follow-up guidance
    ```
 
 4. **Delete project.md** once you've moved everything useful.
@@ -266,8 +270,8 @@ Here's my current project.md:
 [paste your project.md content]
 
 Please help me create a config.yaml with:
-1. A concise `context:` section (this gets injected into every planning request, so keep it tight—focus on tech stack, key constraints, and conventions that often get ignored)
-2. `rules:` for specific artifacts if any content is artifact-specific (e.g., "use Given/When/Then" belongs in specs rules, not global context)
+1. A concise `context:` section (this gets injected into artifact instructions plus apply/archive workflow guidance, so keep it tight—focus on tech stack, key constraints, and conventions that often get ignored)
+2. `rules:` for specific targets if any content is target-specific (e.g., "use Given/When/Then" belongs in `specs`, implementation constraints belong in `apply`, and post-archive follow-up belongs in `archive`)
 
 Leave out anything generic that AI models already know. Be ruthless about brevity.
 ```
@@ -446,13 +450,13 @@ openspec status --change add-my-feature
 schema: spec-driven
 
 # Optional: Project context (max 50KB)
-# Injected into ALL artifact instructions
+# Injected into artifact, apply, and archive instructions
 context: |
   Your project background, tech stack,
   conventions, and constraints.
 
-# Optional: Per-artifact rules
-# Only injected into matching artifacts
+# Optional: Per-target rules
+# Injected only into the matching artifact or workflow target
 rules:
   proposal:
     - Include rollback plan
@@ -462,6 +466,10 @@ rules:
     - Document fallback strategies
   tasks:
     - Break into 2-hour maximum chunks
+  apply:
+    - Use sub-agents only when explicitly allowed
+  archive:
+    - Update follow-up docs after archiving
 ```
 
 ### Schema Resolution
@@ -517,11 +525,12 @@ openspec init --force
 
 Restart your IDE. Skills are detected at startup.
 
-### "Unknown artifact ID in rules"
+### "Unknown rule target in rules"
 
-Check that your `rules:` keys match your schema's artifact IDs:
+Check that your `rules:` keys match either your schema's artifact IDs or a reserved workflow target:
 
 - **spec-driven**: `proposal`, `specs`, `design`, `tasks`
+- **workflow targets**: `apply`, `archive`
 
 Run this to see valid artifact IDs:
 

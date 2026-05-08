@@ -98,15 +98,15 @@ The system SHALL reject context fields exceeding 50KB and log a warning.
 
 ### Requirement: Defer artifact ID validation to instruction loading
 
-The system SHALL NOT validate artifact IDs in rules during config load time. Validation happens during instruction loading when schema is known.
+The system SHALL NOT validate rule targets in rules during config load time. Validation happens during instruction loading when schema is known.
 
 #### Scenario: Config with rules is loaded
 - **WHEN** config contains `rules: { unknownartifact: [...] }`
 - **THEN** config is loaded successfully without validation errors
 
 #### Scenario: Validation happens at instruction load time
-- **WHEN** instructions are loaded for any artifact and config has unknown artifact IDs in rules
-- **THEN** warnings are emitted about unknown artifact IDs (see rules-injection spec for details)
+- **WHEN** instructions are loaded for any artifact or workflow target and config has unknown rule targets in rules
+- **THEN** warnings are emitted about unknown rule targets (see rules-injection spec for details)
 
 ### Requirement: Gracefully handle config errors without halting
 

@@ -41,6 +41,8 @@ export function getApplyChangeSkillTemplate(): SkillTemplate {
 
    This returns:
    - \`contextFiles\`: artifact ID -> array of concrete file paths (varies by schema - could be proposal/specs/design/tasks or spec/tests/implementation/docs)
+   - Injected project \`context\` when configured
+   - Injected \`rules.apply\` when configured
    - Progress (total, complete, remaining)
    - Task list with status
    - Dynamic instruction based on current state
@@ -63,6 +65,7 @@ export function getApplyChangeSkillTemplate(): SkillTemplate {
    - Schema being used
    - Progress: "N/M tasks complete"
    - Remaining tasks overview
+   - Injected project context/rules when present
    - Dynamic instruction from CLI
 
 6. **Implement tasks (loop until done or blocked)**
@@ -220,6 +223,7 @@ export function getOpsxApplyCommandTemplate(): CommandTemplate {
    - Schema being used
    - Progress: "N/M tasks complete"
    - Remaining tasks overview
+   - Injected project context/rules when present
    - Dynamic instruction from CLI
 
 6. **Implement tasks (loop until done or blocked)**

@@ -23,26 +23,88 @@ export const ProjectConfigSchema = z.object({
     .min(1)
     .describe('The workflow schema to use (e.g., "spec-driven")'),
 
-  // Optional: project context (injected into all artifact instructions)
+  // Optional: project context (injected into artifact and workflow instructions)
   // Max size: 50KB (enforced during parsing)
   context: z
     .string()
     .optional()
-    .describe('Project context injected into all artifact instructions'),
+    .describe('Project context injected into artifact and workflow instructions'),
 
-  // Optional: per-artifact rules (additive to schema's built-in guidance)
+  // Optional: per-target rules (artifact IDs plus reserved workflow targets)
   rules: z
     .record(
-      z.string(), // artifact ID
-      z.array(z.string()) // list of rules
+      z.string(),
+      z.array(z.string())
     )
     .optional()
-    .describe('Per-artifact rules, keyed by artifact ID'),
+    .describe('Per-target rules, keyed by artifact ID or reserved workflow target'),
 });
 
 export type ProjectConfig = z.infer<typeof ProjectConfigSchema>;
 
+export const RESERVED_WORKFLOW_RULE_TARGETS = ['apply', 'archive'] as const;
+
+export interface ResolvedInstructionConfig {
+  context: string | undefined;
+  rules: string[] | undefined;
+}
+
 const MAX_CONTEXT_SIZE = 50 * 1024; // 50KB hard limit
+const shownValidationWarnings = new Set<string>();
+
+function getValidRuleTargets(validArtifactIds: Set<string>): string[] {
+  return Array.from(
+    new Set<string>([...validArtifactIds, ...RESERVED_WORKFLOW_RULE_TARGETS])
+  ).sort();
+}
+
+export function resolveInstructionConfig(
+  projectConfig: ProjectConfig | null,
+  target: string
+): ResolvedInstructionConfig {
+  const context = projectConfig?.context?.trim() || undefined;
+  const rules = projectConfig?.rules?.[target];
+
+  return {
+    context,
+    rules: rules && rules.length > 0 ? rules : undefined,
+  };
+}
+
+export function loadProjectInstructionConfig(
+  projectRoot: string,
+  target: string,
+  validArtifactIds: Set<string>,
+  schemaName: string,
+  options: { onInvalid?: 'warn' | 'throw' } = {}
+): ResolvedInstructionConfig {
+  let projectConfig: ProjectConfig | null = null;
+
+  try {
+    projectConfig = readProjectConfig(projectRoot);
+  } catch {
+    return { context: undefined, rules: undefined };
+  }
+
+  if (projectConfig?.rules) {
+    const warnings = validateConfigRules(projectConfig.rules, validArtifactIds, schemaName);
+
+    if (warnings.length > 0) {
+      if (options.onInvalid === 'throw') {
+        throw new Error(warnings.join('\n'));
+      }
+
+      for (const warning of warnings) {
+        if (!shownValidationWarnings.has(warning)) {
+          console.warn(warning);
+          shownValidationWarnings.add(warning);
+        }
+      }
+    }
+  }
+
+  return resolveInstructionConfig(projectConfig, target);
+}
 
 /**
  * Read and parse openspec/config.yaml from project root.
@@ -161,14 +223,14 @@ export function readProjectConfig(projectRoot: string): ProjectConfig | null {
 }
 
 /**
- * Validate artifact IDs in rules against a schema's artifacts.
+ * Validate rule targets against a schema's artifacts plus reserved workflow targets.
  * Called during instruction loading (when schema is known).
- * Returns warnings for unknown artifact IDs.
+ * Returns warnings for unknown targets.
  *
  * @param rules - The rules object from config
  * @param validArtifactIds - Set of valid artifact IDs from the schema
  * @param schemaName - Name of the schema for error messages
- * @returns Array of warning messages for unknown artifact IDs
+ * @returns Array of warning messages for unknown targets
  */
 export function validateConfigRules(
   rules: Record<string, string[]>,
@@ -176,13 +238,14 @@ export function validateConfigRules(
   schemaName: string
 ): string[] {
   const warnings: string[] = [];
+  const validTargets = getValidRuleTargets(validArtifactIds);
+  const validTargetsSet = new Set(validTargets);
 
-  for (const artifactId of Object.keys(rules)) {
-    if (!validArtifactIds.has(artifactId)) {
-      const validIds = Array.from(validArtifactIds).sort().join(', ');
+  for (const target of Object.keys(rules)) {
+    if (!validTargetsSet.has(target)) {
       warnings.push(
-        `Unknown artifact ID in rules: "${artifactId}". ` +
-          `Valid IDs for schema "${schemaName}": ${validIds}`
+        `Unknown rule target in rules: "${target}". ` +
+          `Valid targets for schema "${schemaName}": ${validTargets.join(', ')}`
       );
     }
   }

@@ -71,7 +71,7 @@ During setup, you'll be prompted to create a **project config** (`openspec/confi
 
 ## Project Configuration
 
-Project config lets you set defaults and inject project-specific context into all artifacts.
+Project config lets you set defaults and inject project-specific context into artifact instructions plus the apply and archive workflow guidance.
 
 ### Creating Config
 
@@ -95,6 +95,10 @@ rules:
     - Use Given/When/Then format for scenarios
   design:
     - Include sequence diagrams for complex flows
+  apply:
+    - Use sub-agents only when explicitly allowed
+  archive:
+    - Update follow-up docs and knowledge bases after archiving
 ```
 
 ### Config Fields
@@ -102,8 +106,8 @@ rules:
 | Field | Type | Description |
 |-------|------|-------------|
 | `schema` | string | Default schema for new changes (e.g., `spec-driven`) |
-| `context` | string | Project context injected into all artifact instructions |
-| `rules` | object | Per-artifact rules, keyed by artifact ID |
+| `context` | string | Project context injected into artifact, apply, and archive instructions |
+| `rules` | object | Per-target rules, keyed by artifact ID or reserved workflow target |
 
 ### How It Works
 
@@ -114,14 +118,17 @@ rules:
 4. Default (`spec-driven`)
 
 **Context injection:**
-- Context is prepended to every artifact's instructions
-- Wrapped in `<context>...</context>` tags
+- Context is injected into every artifact's instructions
+- The same context is also exposed in `openspec instructions apply` and `openspec instructions archive`
+- Wrapped in `<context>...</context>` tags on text instruction surfaces
 - Helps AI understand your project's conventions
 
 **Rules injection:**
-- Rules are only injected for matching artifacts
-- Wrapped in `<rules>...</rules>` tags
-- Appear after context, before the template
+- Rules are only injected for matching targets
+- Artifact keys such as `proposal`, `specs`, `design`, and `tasks` stay artifact-scoped
+- Reserved workflow targets `apply` and `archive` scope guidance to those workflow instruction surfaces
+- Wrapped in `<rules>...</rules>` tags on text instruction surfaces
+- Appear after context and before the main instruction content
 
 ### Artifact IDs by Schema
 
@@ -131,17 +138,25 @@ rules:
 - `design` — Technical design
 - `tasks` — Implementation tasks
 
+### Reserved Workflow Targets
+
+In addition to artifact IDs, `rules` also accepts these workflow-only targets:
+- `apply` — guidance for `openspec instructions apply` and `/opsx:apply`
+- `archive` — guidance for `openspec instructions archive` and `/opsx:archive`
+
+Use artifact keys when the rule only applies while creating that artifact. Use `apply` or `archive` when the guidance should appear during implementation or archive review regardless of which artifacts were created earlier.
+
 ### Config Validation
 
-- Unknown artifact IDs in `rules` generate warnings
+- Unknown rule targets in `rules` generate actionable warnings or errors depending on the caller
 - Schema names are validated against available schemas
 - Context has a 50KB size limit
 - Invalid YAML is reported with line numbers
 
 ### Troubleshooting
 
-**"Unknown artifact ID in rules: X"**
-- Check artifact IDs match your schema (see list above)
+**"Unknown rule target in rules: X"**
+- Check the key matches either an artifact ID or a reserved workflow target (`apply`, `archive`)
 - Run `openspec schemas --json` to see artifact IDs for each schema
 
 **Config not being applied:**
@@ -208,10 +223,14 @@ Creates all planning artifacts at once. Use when you have a clear picture of wha
 ```
 Works through tasks, checking them off as you go. If you're juggling multiple changes, you can run `/opsx:apply <name>`; otherwise it should infer from the conversation and prompt you to choose if it can't tell.
 
+If `openspec/config.yaml` defines shared `context` or `rules.apply`, that guidance is surfaced in the apply instruction payload alongside the schema-driven task guidance.
+
 ### Finish up
 ```
 /opsx:archive   # Move to archive when done (prompts to sync specs if needed)
 ```
+
+If `openspec/config.yaml` defines shared `context` or `rules.archive`, that guidance is surfaced during archive review as additive workflow guidance. It does not replace readiness checks, task warnings, sync prompts, or archive summaries.
 
 ## When to Update vs. Start Fresh
 

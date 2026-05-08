@@ -5,11 +5,8 @@ import { ArtifactGraph } from './graph.js';
 import { detectCompleted } from './state.js';
 import { resolveSchemaForChange } from '../../utils/change-metadata.js';
 import { FileSystemUtils } from '../../utils/file-system.js';
-import { readProjectConfig, validateConfigRules } from '../project-config.js';
+import { loadProjectInstructionConfig } from '../project-config.js';
 import type { Artifact, CompletedSet } from './types.js';
-
-// Session-level cache for validation warnings (avoid repeating same warnings)
-const shownWarnings = new Set<string>();
 
 /**
  * Error thrown when loading a template fails.
@@ -227,41 +224,14 @@ export function generateInstructions(
   const dependencies = getDependencyInfo(artifact, context.graph, context.completed);
   const unlocks = getUnlockedArtifacts(context.graph, artifactId);
 
-  // Use projectRoot from context if not explicitly provided
   const effectiveProjectRoot = projectRoot ?? context.projectRoot;
-
-  // Try to read project config for context and rules
-  let projectConfig = null;
-  if (effectiveProjectRoot) {
-    try {
-      projectConfig = readProjectConfig(effectiveProjectRoot);
-    } catch {
-      // If config read fails, continue without config
-    }
-  }
-
-  // Validate rules artifact IDs if config has rules (only once per session)
-  if (projectConfig?.rules) {
-    const validArtifactIds = new Set(context.graph.getAllArtifacts().map((a) => a.id));
-    const warnings = validateConfigRules(
-      projectConfig.rules,
-      validArtifactIds,
-      context.schemaName
-    );
-
-    // Show each unique warning only once per session
-    for (const warning of warnings) {
-      if (!shownWarnings.has(warning)) {
-        console.warn(warning);
-        shownWarnings.add(warning);
-      }
-    }
-  }
-
-  // Extract context and rules as separate fields (not prepended to template)
-  const configContext = projectConfig?.context?.trim() || undefined;
-  const rulesForArtifact = projectConfig?.rules?.[artifactId];
-  const configRules = rulesForArtifact && rulesForArtifact.length > 0 ? rulesForArtifact : undefined;
+  const validArtifactIds = new Set(context.graph.getAllArtifacts().map((a) => a.id));
+  const config = loadProjectInstructionConfig(
+    effectiveProjectRoot,
+    artifactId,
+    validArtifactIds,
+    context.schemaName
+  );
 
   return {
     changeName: context.changeName,
@@ -271,8 +241,8 @@ export function generateInstructions(
     outputPath: artifact.generates,
     description: artifact.description,
     instruction: artifact.instruction,
-    context: configContext,
-    rules: configRules,
+    context: config.context,
+    rules: config.rules,
     template: templateContent,
     dependencies,
     unlocks,

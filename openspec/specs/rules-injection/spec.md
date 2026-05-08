@@ -1,12 +1,12 @@
 # rules-injection Specification
 
 ## Purpose
-Define how per-artifact rules from project config are injected into generated instructions with deterministic formatting and validation.
+Define how per-target rules from project config are injected into generated instructions with deterministic formatting and validation.
 
 ## Requirements
-### Requirement: Inject rules only for matching artifact
+### Requirement: Inject rules only for matching target
 
-The system SHALL inject rules from config into instructions only when the artifact ID matches a key in the rules object.
+The system SHALL inject rules from config into instructions only when the requested artifact or workflow target matches a key in the rules object.
 
 #### Scenario: Rules exist for the artifact
 - **WHEN** loading instructions for "proposal" and config has `rules: { proposal: ["Rule 1", "Rule 2"] }`
@@ -56,9 +56,9 @@ The system SHALL inject rule text without modification, escaping, or interpretat
 - **WHEN** rule text contains line breaks
 - **THEN** line breaks are preserved within the bullet point
 
-### Requirement: Support multiple artifacts with different rules
+### Requirement: Support multiple targets with different rules
 
-The system SHALL allow different rule sets for different artifacts in the same config.
+The system SHALL allow different rule sets for different artifacts and workflow targets in the same config.
 
 #### Scenario: Multiple artifacts have rules
 - **WHEN** config has `rules: { proposal: ["P1"], specs: ["S1", "S2"], tasks: ["T1"] }`
@@ -68,9 +68,9 @@ The system SHALL allow different rule sets for different artifacts in the same c
 - **WHEN** config has rules for proposal and specs only
 - **THEN** design and tasks instructions have no `<rules>` section
 
-### Requirement: Rules are additive to schema guidance
+### Requirement: Rules are additive to built-in guidance
 
-The system SHALL add config rules to the schema's built-in artifact instruction, not replace it.
+The system SHALL add config rules to the schema's built-in artifact instruction or workflow guidance, not replace it.
 
 #### Scenario: Artifact has schema instruction and config rules
 - **WHEN** artifact has built-in instruction from schema and config provides rules
@@ -80,21 +80,21 @@ The system SHALL add config rules to the schema's built-in artifact instruction,
 - **WHEN** schema says "create proposal" and config rules say "include rollback plan"
 - **THEN** agent sees both the schema template and the additional rule
 
-### Requirement: Validate artifact IDs during instruction loading
+### Requirement: Validate rule targets during instruction loading
 
-The system SHALL validate artifact IDs in rules against the schema when instructions are loaded and emit warnings for unknown IDs.
+The system SHALL validate rule targets in rules against the schema artifact IDs plus reserved workflow targets when instructions are loaded and emit warnings for unknown targets.
 
-#### Scenario: All artifact IDs are valid
-- **WHEN** instructions loaded and config has `rules: { proposal: [...], specs: [...] }` for schema with those artifacts
+#### Scenario: All rule targets are valid
+- **WHEN** instructions loaded and config has `rules: { proposal: [...], specs: [...], apply: [...], archive: [...] }` for a schema that includes those artifacts
 - **THEN** no validation warnings are emitted
 
-#### Scenario: Unknown artifact ID in rules
+#### Scenario: Unknown rule target in rules
 - **WHEN** instructions loaded and config has `rules: { unknownartifact: [...] }`
-- **THEN** warning emitted: "Unknown artifact ID in rules: 'unknownartifact'. Valid IDs for schema 'spec-driven': design, proposal, specs, tasks"
+- **THEN** warning emitted: "Unknown rule target in rules: \"unknownartifact\". Valid targets for schema \"spec-driven\": apply, archive, design, proposal, specs, tasks"
 
-#### Scenario: Multiple unknown artifact IDs
-- **WHEN** instructions loaded and config has multiple unknown artifact IDs
-- **THEN** separate warning emitted for each unknown artifact ID
+#### Scenario: Multiple unknown rule targets
+- **WHEN** instructions loaded and config has multiple unknown rule targets
+- **THEN** separate warning emitted for each unknown rule target
 
 #### Scenario: Validation warnings shown once per session
 - **WHEN** instructions loaded multiple times in same CLI session

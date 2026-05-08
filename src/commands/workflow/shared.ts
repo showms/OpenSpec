@@ -34,6 +34,26 @@ export interface ApplyInstructions {
   tasks: TaskItem[];
   state: 'blocked' | 'all_done' | 'ready';
   missingArtifacts?: string[];
+  context?: string;
+  rules?: string[];
+  applyRequires: string[];
+  tracks: string | null;
+  instruction: string;
+}
+
+export interface ArchiveInstructions {
+  changeName: string;
+  changeDir: string;
+  schemaName: string;
+  status: {
+    incompleteArtifacts: string[];
+    totalTasks: number;
+    completedTasks: number;
+    incompleteTasks: number;
+    hasDeltaSpecs: boolean;
+  };
+  context?: string;
+  rules?: string[];
   instruction: string;
 }
 

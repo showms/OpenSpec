@@ -21,12 +21,15 @@ import {
   statusCommand,
   instructionsCommand,
   applyInstructionsCommand,
+  archiveInstructionsCommand,
   templatesCommand,
   schemasCommand,
   newChangeCommand,
   DEFAULT_SCHEMA,
   type StatusOptions,
   type InstructionsOptions,
+  type ApplyInstructionsOptions,
+  type ArchiveInstructionsOptions,
   type TemplatesOptions,
   type SchemasOptions,
   type NewChangeOptions,
@@ -447,9 +450,10 @@ program
   .option('--json', 'Output as JSON')
   .action(async (artifactId: string | undefined, options: InstructionsOptions) => {
     try {
-      // Special case: "apply" is not an artifact, but a command to get apply instructions
       if (artifactId === 'apply') {
-        await applyInstructionsCommand(options);
+        await applyInstructionsCommand(options as ApplyInstructionsOptions);
+      } else if (artifactId === 'archive') {
+        await archiveInstructionsCommand(options as ArchiveInstructionsOptions);
       } else {
         await instructionsCommand(artifactId, options);
       }

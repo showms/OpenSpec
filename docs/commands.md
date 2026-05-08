@@ -692,7 +692,7 @@ The AI creates incomplete or incorrect artifacts.
 
 **Solutions:**
 - Add project context in `openspec/config.yaml`
-- Add per-artifact rules for specific guidance
+- Add per-target rules for specific artifact or workflow guidance
 - Provide more detail in your change description
 - Use `/opsx:continue` instead of `/opsx:ff` for more control
 

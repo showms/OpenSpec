@@ -424,8 +424,7 @@ rules:
         consoleWarnSpy.mockRestore();
       });
 
-      it('should warn about unknown artifact IDs in rules', () => {
-        // Create project config with invalid artifact ID
+      it('should warn about unknown rule targets in rules', () => {
         const configDir = path.join(tempDir, 'openspec');
         fs.mkdirSync(configDir, { recursive: true });
         fs.writeFileSync(
@@ -443,7 +442,7 @@ rules:
         generateInstructions(context, 'proposal', tempDir);
 
         expect(consoleWarnSpy).toHaveBeenCalledWith(
-          expect.stringContaining('Unknown artifact ID in rules: "invalid-artifact"')
+          expect.stringContaining('Unknown rule target in rules: "invalid-artifact"')
         );
       });
 
@@ -475,17 +474,16 @@ rules:
           // Note: We may have gotten warnings from other tests, so check that
           // the count didn't increase by more than 1 from the first call
           const callCount = consoleWarnSpy.mock.calls.filter(call =>
-            call[0]?.includes('Unknown artifact ID in rules')
+            call[0]?.includes('Unknown rule target in rules')
           ).length;
 
-          expect(callCount).toBeGreaterThanOrEqual(1);
+          expect(callCount).toBe(1);
         } finally {
           fs.rmSync(freshTempDir, { recursive: true, force: true });
         }
       });
 
-      it('should not warn for valid artifact IDs', () => {
-        // Create project config with valid artifact IDs
+      it('should not warn for valid artifact IDs and reserved workflow targets', () => {
         const configDir = path.join(tempDir, 'openspec');
         fs.mkdirSync(configDir, { recursive: true });
         fs.writeFileSync(
@@ -496,6 +494,10 @@ rules:
     - Rule 1
   specs:
     - Rule 2
+  apply:
+    - Rule 3
+  archive:
+    - Rule 4
 `
         );
 

@@ -20,7 +20,9 @@ import {
   validateSchemaExists,
   type TaskItem,
   type ApplyInstructions,
+  type ArchiveInstructions,
 } from './shared.js';
+import { loadProjectInstructionConfig } from '../../core/project-config.js';
 
 // -----------------------------------------------------------------------------
 // Types
@@ -33,6 +35,12 @@ export interface InstructionsOptions {
 }
 
 export interface ApplyInstructionsOptions {
+  change?: string;
+  schema?: string;
+  json?: boolean;
+}
+
+export interface ArchiveInstructionsOptions {
   change?: string;
   schema?: string;
   json?: boolean;
@@ -221,7 +229,6 @@ function parseTasksFile(content: string): TaskItem[] {
   let taskIndex = 0;
 
   for (const line of lines) {
-    // Match checkbox patterns: - [ ] or - [x] or - [X]
     const checkboxMatch = line.match(/^[-*]\s*\[([ xX])\]\s*(.+)\s*$/);
     if (checkboxMatch) {
       taskIndex++;
@@ -236,6 +243,15 @@ function parseTasksFile(content: string): TaskItem[] {
   }
 
   return tasks;
+}
+
+async function readTasksFromFile(tasksPath: string): Promise<TaskItem[]> {
+  if (!fs.existsSync(tasksPath)) {
+    return [];
+  }
+
+  const tasksContent = await fs.promises.readFile(tasksPath, 'utf-8');
+  return parseTasksFile(tasksContent);
 }
 
 /**
@@ -261,6 +277,14 @@ export async function generateApplyInstructions(
   const requiredArtifactIds = applyConfig?.requires ?? schema.artifacts.map((a) => a.id);
   const tracksFile = applyConfig?.tracks ?? null;
   const schemaInstruction = applyConfig?.instruction ?? null;
+  const validArtifactIds = new Set(schema.artifacts.map((a) => a.id));
+  const config = loadProjectInstructionConfig(
+    projectRoot,
+    'apply',
+    validArtifactIds,
+    context.schemaName,
+    { onInvalid: 'throw' }
+  );
 
   // Check which required artifacts are missing
   const missingArtifacts: string[] = [];
@@ -287,8 +311,7 @@ export async function generateApplyInstructions(
     const tracksPath = path.join(changeDir, tracksFile);
     tracksFileExists = fs.existsSync(tracksPath);
     if (tracksFileExists) {
-      const tasksContent = await fs.promises.readFile(tracksPath, 'utf-8');
-      tasks = parseTasksFile(tasksContent);
+      tasks = await readTasksFromFile(tracksPath);
     }
   }
 
@@ -335,6 +358,10 @@ export async function generateApplyInstructions(
     tasks,
     state,
     missingArtifacts: missingArtifacts.length > 0 ? missingArtifacts : undefined,
+    context: config.context,
+    rules: config.rules,
+    applyRequires: requiredArtifactIds,
+    tracks: tracksFile,
     instruction,
   };
 }
@@ -346,12 +373,10 @@ export async function applyInstructionsCommand(options: ApplyInstructionsOptions
     const projectRoot = process.cwd();
     const changeName = await validateChangeExists(options.change, projectRoot);
 
-    // Validate schema if explicitly provided
     if (options.schema) {
       validateSchemaExists(options.schema, projectRoot);
     }
 
-    // generateApplyInstructions uses loadChangeContext which auto-detects schema
     const instructions = await generateApplyInstructions(projectRoot, changeName, options.schema);
 
     spinner?.stop();
@@ -368,14 +393,111 @@ export async function applyInstructionsCommand(options: ApplyInstructionsOptions
   }
 }
 
+export async function generateArchiveInstructions(
+  projectRoot: string,
+  changeName: string,
+  schemaName?: string
+): Promise<ArchiveInstructions> {
+  const context = loadChangeContext(projectRoot, changeName, schemaName);
+  const schema = resolveSchema(context.schemaName, projectRoot);
+  const validArtifactIds = new Set(schema.artifacts.map((a) => a.id));
+  const config = loadProjectInstructionConfig(
+    projectRoot,
+    'archive',
+    validArtifactIds,
+    context.schemaName,
+    { onInvalid: 'throw' }
+  );
+
+  const statuses = context.graph.getAllArtifacts().map((artifact) => ({
+    id: artifact.id,
+    done: context.completed.has(artifact.id),
+  }));
+  const incompleteArtifacts = statuses.filter((artifact) => !artifact.done).map((artifact) => artifact.id);
+
+  const tasksPath = path.join(context.changeDir, 'tasks.md');
+  const tasks = await readTasksFromFile(tasksPath);
+  const completedTasks = tasks.filter((task) => task.done).length;
+  const incompleteTasks = tasks.length - completedTasks;
+
+  const specsDir = path.join(context.changeDir, 'specs');
+  let hasDeltaSpecs = false;
+  if (fs.existsSync(specsDir)) {
+    const entries = await fs.promises.readdir(specsDir, { withFileTypes: true });
+    hasDeltaSpecs = entries.some((entry) => entry.isDirectory());
+  }
+
+  let instruction = 'Review archive readiness, confirm spec sync behavior, and proceed with archive if appropriate.';
+  if (incompleteArtifacts.length > 0) {
+    instruction = `Archive has warnings. Incomplete artifacts: ${incompleteArtifacts.join(', ')}.`;
+  } else if (incompleteTasks > 0) {
+    instruction = `Archive has warnings. ${incompleteTasks} incomplete task(s) remain in tasks.md.`;
+  } else if (hasDeltaSpecs) {
+    instruction = 'Archive is ready. Review delta specs and decide whether to sync them before archiving.';
+  }
+
+  return {
+    changeName,
+    changeDir: context.changeDir,
+    schemaName: context.schemaName,
+    status: {
+      incompleteArtifacts,
+      totalTasks: tasks.length,
+      completedTasks,
+      incompleteTasks,
+      hasDeltaSpecs,
+    },
+    context: config.context,
+    rules: config.rules,
+    instruction,
+  };
+}
+
+export async function archiveInstructionsCommand(options: ArchiveInstructionsOptions): Promise<void> {
+  const spinner = options.json ? undefined : ora('Generating archive instructions...').start();
+
+  try {
+    const projectRoot = process.cwd();
+    const changeName = await validateChangeExists(options.change, projectRoot);
+
+    if (options.schema) {
+      validateSchemaExists(options.schema, projectRoot);
+    }
+
+    const instructions = await generateArchiveInstructions(projectRoot, changeName, options.schema);
+
+    spinner?.stop();
+
+    if (options.json) {
+      console.log(JSON.stringify(instructions, null, 2));
+      return;
+    }
+
+    printArchiveInstructionsText(instructions);
+  } catch (error) {
+    spinner?.stop();
+    throw error;
+  }
+}
+
 export function printApplyInstructionsText(instructions: ApplyInstructions): void {
-  const { changeName, schemaName, contextFiles, progress, tasks, state, missingArtifacts, instruction } = instructions;
+  const {
+    changeName,
+    schemaName,
+    contextFiles,
+    progress,
+    tasks,
+    state,
+    missingArtifacts,
+    context,
+    rules,
+    instruction,
+  } = instructions;
 
   console.log(`## Apply: ${changeName}`);
   console.log(`Schema: ${schemaName}`);
   console.log();
 
-  // Warning for blocked state
   if (state === 'blocked' && missingArtifacts) {
     console.log('### ⚠️ Blocked');
     console.log();
@@ -384,7 +506,6 @@ export function printApplyInstructionsText(instructions: ApplyInstructions): voi
     console.log();
   }
 
-  // Context files (dynamically from schema)
   const contextFileEntries = Object.entries(contextFiles);
   if (contextFileEntries.length > 0) {
     console.log('### Context Files');
@@ -396,7 +517,6 @@ export function printApplyInstructionsText(instructions: ApplyInstructions): voi
     console.log();
   }
 
-  // Progress (only show if we have tracking)
   if (progress.total > 0 || tasks.length > 0) {
     console.log('### Progress');
     if (state === 'all_done') {
@@ -407,7 +527,6 @@ export function printApplyInstructionsText(instructions: ApplyInstructions): voi
     console.log();
   }
 
-  // Tasks
   if (tasks.length > 0) {
     console.log('### Tasks');
     for (const task of tasks) {
@@ -417,7 +536,76 @@ export function printApplyInstructionsText(instructions: ApplyInstructions): voi
     console.log();
   }
 
-  // Instruction
+  if (context) {
+    console.log('<context>');
+    console.log(context);
+    console.log('</context>');
+    console.log();
+  }
+
+  if (rules && rules.length > 0) {
+    console.log('<rules>');
+    for (const rule of rules) {
+      console.log(`- ${rule}`);
+    }
+    console.log('</rules>');
+    console.log();
+  }
+
+  console.log('### Instruction');
+  console.log(instruction);
+}
+
+export function printArchiveInstructionsText(instructions: ArchiveInstructions): void {
+  const {
+    changeName,
+    schemaName,
+    status,
+    context,
+    rules,
+    instruction,
+  } = instructions;
+
+  console.log(`## Archive: ${changeName}`);
+  console.log(`Schema: ${schemaName}`);
+  console.log();
+
+  console.log('### Readiness');
+  console.log(`Incomplete artifacts: ${status.incompleteArtifacts.length}`);
+  console.log(`Tasks: ${status.completedTasks}/${status.totalTasks} complete`);
+  console.log(`Delta specs present: ${status.hasDeltaSpecs ? 'yes' : 'no'}`);
+  console.log();
+
+  if (status.incompleteArtifacts.length > 0) {
+    console.log('### Incomplete Artifacts');
+    for (const artifactId of status.incompleteArtifacts) {
+      console.log(`- ${artifactId}`);
+    }
+    console.log();
+  }
+
+  if (status.incompleteTasks > 0) {
+    console.log('### Task Warning');
+    console.log(`${status.incompleteTasks} incomplete task(s) remain.`);
+    console.log();
+  }
+
+  if (context) {
+    console.log('<context>');
+    console.log(context);
+    console.log('</context>');
+    console.log();
+  }
+
+  if (rules && rules.length > 0) {
+    console.log('<rules>');
+    for (const rule of rules) {
+      console.log(`- ${rule}`);
+    }
+    console.log('</rules>');
+    console.log();
+  }
+
   console.log('### Instruction');
   console.log(instruction);
 }

@@ -25,35 +25,37 @@ export function getArchiveChangeSkillTemplate(): SkillTemplate {
 
    **IMPORTANT**: Do NOT guess or auto-select a change. Always let the user choose.
 
-2. **Check artifact completion status**
+2. **Get archive guidance**
 
-   Run \`openspec status --change "<name>" --json\` to check artifact completion.
+   Run \`openspec instructions archive --change "<name>" --json\` to load archive-specific guidance.
 
    Parse the JSON to understand:
    - \`schemaName\`: The workflow being used
-   - \`artifacts\`: List of artifacts with their status (\`done\` or other)
+   - archive readiness status (incomplete artifacts, task progress, delta spec presence)
+   - injected project \`context\` when configured
+   - injected \`rules.archive\` when configured
 
-   **If any artifacts are not \`done\`:**
-   - Display warning listing incomplete artifacts
+   Use the archive guidance output as the source of truth for readiness details.
+
+   **If any artifacts are incomplete:**
+   - Display warning listing incomplete artifacts from the guidance output
    - Use **AskUserQuestion tool** to confirm user wants to proceed
    - Proceed if user confirms
 
-3. **Check task completion status**
+3. **Review task readiness**
 
-   Read the tasks file (typically \`tasks.md\`) to check for incomplete tasks.
+   Use the archive guidance output to review task completion status.
 
-   Count tasks marked with \`- [ ]\` (incomplete) vs \`- [x]\` (complete).
-
-   **If incomplete tasks found:**
-   - Display warning showing count of incomplete tasks
+   **If incomplete tasks are reported:**
+   - Display warning showing the incomplete task count
    - Use **AskUserQuestion tool** to confirm user wants to proceed
    - Proceed if user confirms
 
-   **If no tasks file exists:** Proceed without task-related warning.
+   **If no tasks file exists or no tasks are tracked:** Proceed without task-related warning.
 
 4. **Assess delta spec sync state**
 
-   Check for delta specs at \`openspec/changes/<name>/specs/\`. If none exist, proceed without sync prompt.
+   Use the archive guidance output to determine whether delta specs are present. If none exist, proceed without sync prompt.
 
    **If delta specs exist:**
    - Compare each delta spec with its corresponding main spec at \`openspec/specs/<capability>/spec.md\`
@@ -91,6 +93,7 @@ export function getArchiveChangeSkillTemplate(): SkillTemplate {
    - Archive location
    - Whether specs were synced (if applicable)
    - Note about any warnings (incomplete artifacts/tasks)
+   - Confirmation that injected context/rules were treated as additive guidance only
 
 **Output On Success**
 
@@ -140,13 +143,15 @@ export function getOpsxArchiveCommandTemplate(): CommandTemplate {
 
    **IMPORTANT**: Do NOT guess or auto-select a change. Always let the user choose.
 
-2. **Check artifact completion status**
+2. **Get archive guidance**
 
-   Run \`openspec status --change "<name>" --json\` to check artifact completion.
+   Run \`openspec instructions archive --change "<name>" --json\` to load archive-specific guidance.
 
    Parse the JSON to understand:
    - \`schemaName\`: The workflow being used
-   - \`artifacts\`: List of artifacts with their status (\`done\` or other)
+   - archive readiness status (incomplete artifacts, task progress, delta spec presence)
+   - injected project \`context\` when configured
+   - injected \`rules.archive\` when configured
 
    **If any artifacts are not \`done\`:**
    - Display warning listing incomplete artifacts
@@ -168,7 +173,7 @@ export function getOpsxArchiveCommandTemplate(): CommandTemplate {
 
 4. **Assess delta spec sync state**
 
-   Check for delta specs at \`openspec/changes/<name>/specs/\`. If none exist, proceed without sync prompt.
+   Use the archive guidance output to determine whether delta specs are present. If none exist, proceed without sync prompt.
 
    **If delta specs exist:**
    - Compare each delta spec with its corresponding main spec at \`openspec/specs/<capability>/spec.md\`
