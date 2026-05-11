@@ -15,7 +15,7 @@ import {
   type AffectedAreasSummary,
   type PlanningHomeSummary,
 } from '../change-status-policy.js';
-import { readProjectConfig, validateConfigRules } from '../project-config.js';
+import { readProjectConfig, validateConfigRules, WORKFLOW_RULE_TARGETS } from '../project-config.js';
 import type { PlanningHome } from '../planning-home.js';
 import type { ChangeMetadata, InitiativeLink } from '../change-metadata/index.js';
 import type { Artifact, CompletedSet } from './types.js';
@@ -300,8 +300,12 @@ export function generateInstructions(
   // Validate rules artifact IDs if config has rules (only once per session)
   if (projectConfig?.rules) {
     const validArtifactIds = new Set(context.graph.getAllArtifacts().map((a) => a.id));
+    // Strip workflow-reserved keys before artifact ID validation so rules.apply/archive don't warn
+    const artifactOnlyRules = Object.fromEntries(
+      Object.entries(projectConfig.rules).filter(([key]) => !(WORKFLOW_RULE_TARGETS as Set<string>).has(key))
+    );
     const warnings = validateConfigRules(
-      projectConfig.rules,
+      artifactOnlyRules,
       validArtifactIds,
       context.schemaName
     );
