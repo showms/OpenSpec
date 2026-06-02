@@ -1,0 +1,284 @@
+Skip to content
+Navigation Menu
+Platform
+Solutions
+Resources
+Open Source
+Enterprise
+Pricing
+Search or jump to...
+Sign in
+Sign up
+Fission-AI
+/
+OpenSpec
+Public
+Notifications
+Fork 3.4k
+ Star 48.9k
+Code
+Issues
+243
+Pull requests
+89
+Discussions
+Actions
+Projects
+Security and quality
+Insights
+Propose extending config injection to apply and archive.
+#1062
+Open
+showms
+wants to merge 9 commits into
+Fission-AI:main
+from
+showms:feat/extend-config-injection-to-apply-archive
++1,537
+-71
+Lines changed: 1537 additions & 71 deletions
+Conversation12
+ (12)
+Commits9
+ (9)
+Checks0
+ (0)
+Files changed27
+ (27)
+Conversation
+showms
+commented
+• 
+edited by coderabbitai Bot 
+Problem
+
+openspec/config.yaml supports context and rules, but rules are only applied when generating artifact instructions. They are not surfaced in apply / archive flows, so project-level guidance becomes inconsistent across the workflow.
+
+Why this matters
+
+Users expect project constraints defined in config to apply throughout the workflow, not only while generating artifacts. This is especially important for:
+
+implementation constraints during apply
+safety and process constraints during archive
+
+In practice, this would make the workflow much more flexible. For example:
+
+during apply, projects could specify execution guidance such as whether sub-agents are allowed, how much parallelization is appropriate, or what implementation constraints must still be followed
+during archive, projects could specify post-archive follow-up steps such as documentation cleanup, knowledge base updates, release note preparation, or other housekeeping actions
+Proposed change
+
+Allow reserved rules targets for workflow phases:
+
+rules.apply
+rules.archive
+
+Keep existing artifact keys unchanged.
+
+Scope
+
+This proposal would:
+
+extend config validation to allow workflow phase targets
+inject rules.apply into apply instructions
+inject rules.archive into archive workflow instructions
+update tests and config help text
+
+It does not redesign the config format.
+
+In this PR
+
+This PR only adds the OpenSpec proposal scaffolding for discussion before implementation:
+
+openspec/changes/extend-config-injection-to-apply-archive/.openspec.yaml
+openspec/changes/extend-config-injection-to-apply-archive/proposal.md
+Test plan
+ Created the change scaffold with the default spec-driven schema
+ Reviewed the proposal scope and backward-compatibility expectations
+ Confirmed this PR contains proposal files only
+ No runtime code changes in this PR, so no tests were run
+Summary by CodeRabbit
+New Features
+Apply and Archive instruction outputs can include project-level context and workflow rules; added an Archive instructions command with JSON output (template, optional context, optional rules).
+Documentation
+Docs and config examples updated to show workflow rule keys (apply/archive) and how context/rules are injected and consumed.
+Tests
+Added unit and integration tests for instruction generation, rendering, validation, CLI JSON behavior, and warning deduplication.
+Behavior
+Workflow rule targets (apply/archive) accepted without artifact-ID warnings; unknown keys emit single-session warnings.
+Propose extending config injection to apply and archive. …
+b50f737
+ showms requested a review from TabishB as a code owner 
+Contributor
+coderabbitai Bot
+commented
+• 
+edited 
+
+Note
+
+Reviews paused
+
+It looks like this branch is under active development. To avoid overwhelming you with review comments due to an influx of new commits, CodeRabbit has automatically paused this review. You can configure this behavior by changing the reviews.auto_review.auto_pause_after_reviewed_commits setting.
+
+Use the following commands to manage reviews:
+
+@coderabbitai resume to resume automatic reviews.
+@coderabbitai review to trigger a single review.
+
+Use the checkboxes below for quick actions:
+
+ ▶️ Resume reviews
+ 🔍 Trigger review
+📝 Walkthrough
+🚥 Pre-merge checks | ✅ 4 | ❌ 1
+✨ Finishing Touches
+
+Thanks for using CodeRabbit! It's free for OSS, and your support helps us grow. If you like it, consider giving us a shout-out.
+
+❤️ Share
+
+Comment @coderabbitai help to get the list of available commands and usage tips.
+
+Merge branch 'main' into feat/extend-config-injection-to-apply-archive
+Verified
+da592a4
+coderabbitai Bot reviewed 
+View reviewed changes
+Contributor
+coderabbitai Bot
+left a comment
+🧹 Nitpick comments (3)
+🤖 Prompt for all review comments with AI agents
+ℹ️ Review info
+Clarify workflow rule targets in proposal. …
+ecd5d38
+Author
+showms
+commented
+• 
+edited 
+
+Updated the proposal to include the config structure, validation expectations, and docs/migration impact
+
+alfred-openspec reviewed 
+View reviewed changes
+Collaborator
+alfred-openspec
+left a comment
+
+This is the right direction: workflow-phase guidance belongs on apply/archive, and proposal-only scope is a good way to settle the contract before implementation. I’d keep rules.apply and rules.archive as reserved workflow targets, but the implementation should avoid turning them into artifact-rule warnings and should keep the built-in apply/archive safety prompts higher priority than config guidance.
+
+Author
+showms
+commented
+
+@alfred-openspec noted, proposal already captures both constraints
+
+feat(config): extend context/rules injection to apply and archive wor… …
+21bfbe6
+coderabbitai Bot reviewed 
+View reviewed changes
+Contributor
+coderabbitai Bot
+left a comment
+🧹 Nitpick comments (2)
+🤖 Prompt for all review comments with AI agents
+ℹ️ Review info
+chore(workflow): address instruction review feedback
+3bfc5eb
+Author
+showms
+commented
+
+Addressed — removed the type assertion for workflow rule targets, and added a comment clarifying the optional archive change validation
+
+Author
+showms
+commented
+
+@TabishB @alfred-openspec Follow-up changes are pushed and the latest feedback is addressed. Would appreciate a review when you have a moment
+
+ showms requested a review from alfred-openspec 
+alfred-openspec requested changes 
+View reviewed changes
+Collaborator
+alfred-openspec
+left a comment
+
+Thanks for taking this from proposal to implementation, the overall shape looks coherent and the test suite passes. I found one validation gap to fix before merge: apply/archive read config directly and do not warn on unknown rules.* keys, so config typos can be missed on the new workflow surfaces.
+
+showms added 2 commits 
+Merge remote-tracking branch 'refs/remotes/upstream/main' into feat/e… …
+96ff98f
+fix(config): validate workflow rule keys in apply and archive paths
+74f7ae6
+Author
+showms
+commented
+
+@alfred-openspec Thanks for the review — I addressed the validation gap in this update.
+
+Changes made:
+
+apply/archive instructions now validate rules.* keys against schema artifact IDs
+reserved workflow targets apply and archive are accepted explicitly
+added tests for warnings, valid workflow targets, and cross-path deduplication
+ showms requested a review from alfred-openspec 
+coderabbitai Bot reviewed 
+View reviewed changes
+Contributor
+coderabbitai Bot
+left a comment
+
+Actionable comments posted: 1
+
+🧹 Nitpick comments (1)
+🤖 Prompt for all review comments with AI agents
+🪄 Autofix (Beta)
+ℹ️ Review info
+openspec/changes/extend-config-injection-to-apply-archive/specs/rules-injection/spec.md
+Outdated
+Show resolved
+showms added 2 commits 
+chore(config): align warning spec and localize workflow rule targets
+01f3954
+chore(config): align warning spec and localize workflow rule targets
+56304ad
+Sign up for free to join this conversation on GitHub. Already have an account? Sign in to comment
+Reviewers
+
+coderabbitai[bot]
+
+TabishB
+
+alfred-openspec
+
+Requested changes must be addressed to merge this pull request.
+
+Assignees
+No one assigned
+Labels
+None yet
+Projects
+None yet
+Milestone
+No milestone
+Development
+
+Successfully merging this pull request may close these issues.
+
+None yet
+
+2 participants
+Footer
+© 2026 GitHub, Inc.
+Footer navigation
+Terms
+Privacy
+Security
+Status
+Community
+Docs
+Contact
+Manage cookies
+Do not share my personal information
