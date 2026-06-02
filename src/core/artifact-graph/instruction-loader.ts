@@ -15,7 +15,7 @@ import {
   type AffectedAreasSummary,
   type PlanningHomeSummary,
 } from '../change-status-policy.js';
-import { readProjectConfig, validateConfigRules, WORKFLOW_RULE_TARGETS } from '../project-config.js';
+import { readProjectConfig, validateConfigRules, emitConfigRuleWarnings } from '../project-config.js';
 import type { PlanningHome } from '../planning-home.js';
 import type { ChangeMetadata, InitiativeLink } from '../change-metadata/index.js';
 import type { Artifact, CompletedSet } from './types.js';
