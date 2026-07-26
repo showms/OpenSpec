@@ -1,12 +1,21 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { Command } from 'commander';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
+
+async function runSchemaCommand(args: string[]): Promise<void> {
+  const { registerSchemaCommand } = await import('../../src/commands/schema.js');
+  const program = new Command();
+  registerSchemaCommand(program);
+  await program.parseAsync(['node', 'openspec', 'schema', ...args]);
+}
 
 describe('schema command', () => {
   let tempDir: string;
   let originalCwd: string;
   let originalEnv: NodeJS.ProcessEnv;
+  let originalExitCode: typeof process.exitCode;
   let consoleLogSpy: ReturnType<typeof vi.spyOn>;
   let consoleErrorSpy: ReturnType<typeof vi.spyOn>;
 
@@ -20,6 +29,8 @@ describe('schema command', () => {
     // Save original cwd and env
     originalCwd = process.cwd();
     originalEnv = { ...process.env };
+    originalExitCode = process.exitCode;
+    process.exitCode = undefined;
 
     // Change to temp directory
     process.chdir(tempDir);
@@ -37,6 +48,7 @@ describe('schema command', () => {
     // Restore cwd and env
     process.chdir(originalCwd);
     process.env = originalEnv;
+    process.exitCode = originalExitCode;
 
     // Clean up temp directory
     fs.rmSync(tempDir, { recursive: true, force: true });
@@ -241,6 +253,77 @@ artifacts:
   });
 
   describe('schema init', () => {
+    it('should make a new config default effective for subsequent changes', async () => {
+      await runSchemaCommand(['init', 'effective-default', '--default', '--json']);
+
+      expect(process.exitCode).toBeUndefined();
+      const configPath = path.join(tempDir, 'openspec', 'config.yaml');
+      const { parse: parseYaml } = await import('yaml');
+      const config = parseYaml(fs.readFileSync(configPath, 'utf-8'));
+      expect(config).toEqual({ schema: 'effective-default' });
+
+      const { createChange } = await import('../../src/utils/change-utils.js');
+      const result = await createChange(tempDir, 'uses-effective-default');
+      expect(result.schema).toBe('effective-default');
+    });
+
+    it('should preserve existing config content and remove the obsolete default field', async () => {
+      const configPath = path.join(tempDir, 'openspec', 'config.yaml');
+      const existingConfig = `# project configuration
+schema: spec-driven
+defaultSchema: stale-default
+context: |
+  Keep this context.
+rules:
+  proposal:
+    - Keep it brief
+references:
+  - team-context
+store: planning-store
+`;
+      fs.writeFileSync(configPath, existingConfig);
+
+      await runSchemaCommand(['init', 'preserved-default', '--default', '--json']);
+
+      const updatedConfig = fs.readFileSync(configPath, 'utf-8');
+      expect(updatedConfig).toContain('# project configuration');
+      const { parse: parseYaml } = await import('yaml');
+      expect(parseYaml(updatedConfig)).toEqual({
+        schema: 'preserved-default',
+        context: 'Keep this context.\n',
+        rules: {
+          proposal: ['Keep it brief'],
+        },
+        references: ['team-context'],
+        store: 'planning-store',
+      });
+    });
+
+    it('should update config.yml in place without creating config.yaml', async () => {
+      const configYmlPath = path.join(tempDir, 'openspec', 'config.yml');
+      const configYamlPath = path.join(tempDir, 'openspec', 'config.yaml');
+      fs.writeFileSync(configYmlPath, 'schema: spec-driven\ncontext: Keep me\n');
+
+      await runSchemaCommand(['init', 'alternate-config', '--default', '--json']);
+
+      expect(fs.existsSync(configYamlPath)).toBe(false);
+      const { parse: parseYaml } = await import('yaml');
+      expect(parseYaml(fs.readFileSync(configYmlPath, 'utf-8'))).toEqual({
+        schema: 'alternate-config',
+        context: 'Keep me',
+      });
+    });
+
+    it('should leave the active config unchanged with --no-default', async () => {
+      const configPath = path.join(tempDir, 'openspec', 'config.yaml');
+      const existingConfig = '# keep this file unchanged\nschema: spec-driven\n';
+      fs.writeFileSync(configPath, existingConfig);
+
+      await runSchemaCommand(['init', 'not-the-default', '--no-default', '--json']);
+
+      expect(fs.readFileSync(configPath, 'utf-8')).toBe(existingConfig);
+    });
+
     it('should create schema directory with schema.yaml', async () => {
       const schemaDir = path.join(tempDir, 'openspec', 'schemas', 'new-schema');
       fs.mkdirSync(schemaDir, { recursive: true });

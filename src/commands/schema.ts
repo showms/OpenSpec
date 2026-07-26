@@ -2,7 +2,7 @@ import { Command } from 'commander';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import ora from 'ora';
-import { stringify as stringifyYaml } from 'yaml';
+import { isMap, parseDocument, stringify as stringifyYaml } from 'yaml';
 import {
   getSchemaDir,
   getProjectSchemasDir,
@@ -13,6 +13,7 @@ import {
 } from '../core/artifact-graph/resolver.js';
 import { parseSchema, SchemaValidationError } from '../core/artifact-graph/schema.js';
 import type { SchemaYaml, Artifact } from '../core/artifact-graph/types.js';
+import { resolveConfigFilePath } from '../core/project-config.js';
 
 /**
  * Schema source location type
@@ -229,6 +230,42 @@ function validateSchema(
  */
 function isValidSchemaName(name: string): boolean {
   return /^[a-z][a-z0-9]*(-[a-z0-9]+)*$/.test(name);
+}
+
+/**
+ * Prepare the project config update used when schema init sets a default.
+ * Existing YAML documents retain comments and unrelated fields.
+ */
+function prepareDefaultSchemaConfig(
+  projectRoot: string,
+  schemaName: string
+): { path: string; content: string } {
+  const existingConfigPath = resolveConfigFilePath(projectRoot);
+  const configPath =
+    existingConfigPath ?? path.join(projectRoot, 'openspec', 'config.yaml');
+
+  if (!existingConfigPath) {
+    return {
+      path: configPath,
+      content: stringifyYaml({ schema: schemaName }),
+    };
+  }
+
+  const document = parseDocument(fs.readFileSync(existingConfigPath, 'utf-8'));
+  if (document.errors.length > 0) {
+    throw document.errors[0];
+  }
+  if (document.contents !== null && !isMap(document.contents)) {
+    throw new Error(`Project config must be a YAML mapping: ${existingConfigPath}`);
+  }
+
+  document.set('schema', schemaName);
+  document.delete('defaultSchema');
+
+  return {
+    path: existingConfigPath,
+    content: document.toString(),
+  };
 }
 
 /**
@@ -801,6 +838,10 @@ export function registerSchemaCommand(program: Command): void {
           }
         }
 
+        const configUpdate = options?.default
+          ? prepareDefaultSchemaConfig(projectRoot, name)
+          : null;
+
         // Create schema directory
         if (spinner) spinner.start(`Creating schema '${name}'...`);
         fs.mkdirSync(schemaDir, { recursive: true });
@@ -868,23 +909,12 @@ export function registerSchemaCommand(program: Command): void {
         }
 
         // Update config if --default
-        if (options?.default) {
-          const configPath = path.join(projectRoot, 'openspec', 'config.yaml');
-
-          if (fs.existsSync(configPath)) {
-            const { parse: parseYaml, stringify: stringifyYaml2 } = await import('yaml');
-            const configContent = fs.readFileSync(configPath, 'utf-8');
-            const config = parseYaml(configContent) || {};
-            config.defaultSchema = name;
-            fs.writeFileSync(configPath, stringifyYaml2(config));
-          } else {
-            // Create config file
-            const configDir = path.dirname(configPath);
-            if (!fs.existsSync(configDir)) {
-              fs.mkdirSync(configDir, { recursive: true });
-            }
-            fs.writeFileSync(configPath, stringifyYaml({ defaultSchema: name }));
+        if (configUpdate) {
+          const configDir = path.dirname(configUpdate.path);
+          if (!fs.existsSync(configDir)) {
+            fs.mkdirSync(configDir, { recursive: true });
           }
+          fs.writeFileSync(configUpdate.path, configUpdate.content);
         }
 
         if (spinner) spinner.succeed(`Created schema '${name}'`);
