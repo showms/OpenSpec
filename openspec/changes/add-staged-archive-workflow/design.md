@@ -1,21 +1,25 @@
 ## Context
 
-See `proposal.md` for motivation. Today the generated archive skill and direct CLI implement different archive paths:
+Archive has two user-facing entry points:
 
-- The skill performs readiness inspection, semantic spec sync, verification, and the final directory move through agent instructions.
-- `ArchiveCommand` validates and deterministically rebuilds specs in-process before writing them and moving the change.
-- Archive-driven `/opsx:sync` writes main specs before the archive outcome is known.
+- generated archive skills perform semantic spec reconciliation and move the change through agent instructions;
+- `openspec archive` deterministically applies deltas and moves the change in one CLI invocation.
 
-The staged path must work across separate CLI processes and agent sessions, selected stores as well as repo-local roots, and Windows as well as POSIX filesystems.
+The staged workflow gives both paths the same safety boundary. Agents edit only plan-owned candidates. The CLI freezes the exact reviewed bytes and archive payload manifest, writes formal specs, moves the change, and records enough state to continue after an interrupted process. When normal resume is impossible, evidence-bound resolve and repair actions keep recovery inside the same CLI-owned boundary.
 
-The important domain property is that main specs may be synced before a change is archived. Standalone `/opsx:sync` already creates that state intentionally. Therefore finalization does not need to simulate a database transaction across several files and a directory move. It needs to ensure that every formal write came from an exact reviewed snapshot, never overwrites unrelated newer work, and can be retried safely.
+Archive uses a documented single-writer workflow. Normal orchestration has one archive lifecycle running at a time for a planning root: the archive skill waits for every command to finish, bulk archive processes changes sequentially, and users do not run standalone sync or manually edit formal specs during finalization.
+
+This change does not create a finalize lock, process lock, lease, or planning-root writer lock. Hash checks detect observable file drift when practical, but they cannot coordinate simultaneous writers or eliminate the race in which two writers both pass preflight before either changes a target. Concurrent archive, standalone sync, and manual formal-spec writes are unsupported rather than serialized by the product.
 
 ```bash
 openspec archive add-login --stage prepare --json
 openspec archive add-login --stage prepare --include-spec auth --exclude-spec billing --json
+openspec archive add-login --stage prepare --archive-name 2026-08-02-add-login-2 --json
 openspec archive add-login --stage status --json
 openspec archive add-login --stage validate --json
-openspec archive add-login --stage finalize --validation <validation-id> --yes --json
+openspec archive add-login --stage finalize --validation <validation-id> --approval <approval-token> --yes --json
+openspec archive add-login --stage resolve --recovery <recovery-id> --json
+openspec archive add-login --stage repair --recovery <recovery-id> --resolution <decision> --approval <approval-token> --yes --json
 openspec archive add-login --stage abort --json
 openspec archive --stage cleanup --json
 ```
@@ -24,403 +28,371 @@ openspec archive --stage cleanup --json
 
 **Goals:**
 
-- Keep semantic Markdown reconciliation agent-driven while isolating it in plan-owned candidates.
+- Isolate agent-authored Markdown reconciliation in plan-owned candidates.
 - Make the exact reviewed candidate bytes the only bytes a staged finalize can write.
-- Detect source, target, and path drift before overwriting newer work.
-- Make interrupted formal writes resumable without backups, rollback, or a multi-file journal.
-- Coordinate OpenSpec-owned formal main-spec mutation with one planning-root mutation lock held only during staged finalize, standalone sync commit, direct archive mutation, abort, and completed-plan cleanup.
-- Keep at most one active archive plan and one current validation snapshot per change, discoverable by change name.
-- Persist only state required for freshness, exact review identity, commit recovery, and completion retry.
-- Preserve direct archive behavior and generated-skill compatibility.
-- Define bulk and mixed-schema behavior without a batch/base-plan CLI surface.
+- Bind approval to the exact complete review and archive payload manifest rather than to a summary or reconstructed command.
+- Detect source or base drift before formal writes begin.
+- Make interrupted per-file writes and archive movement safe to retry without rollback.
+- Give formal-spec conflicts and orphaned movement evidence an explicit, reviewed, CLI-owned recovery path.
+- Recover a missing or damaged primary plan when one consistent source-local recovery capsule remains.
+- Keep one active plan and one current validation per change, discoverable by change name.
+- Preserve a complete review without forcing an unbounded JSON or terminal response.
+- Keep staged behavior consistent across repo-local roots, selected stores, Windows, macOS, and Linux.
+- Preserve the direct archive interface while sharing the same safety primitives.
+- Keep bulk behavior predictable by processing every selected change sequentially.
 
 **Non-Goals:**
 
-- Provide all-or-nothing rollback across several main specs and the change-directory move.
-- Guarantee that a move failure leaves main specs at their prepared base; reviewed spec writes may remain applied.
-- Hold locks while an agent edits candidates or a user reviews output.
-- Add per-target locks, multiple competing plans for one change, backups, or a write-ahead mutation journal.
-- Automatically copy/remove a staged archive across filesystems or around a rename failure.
-- Replace the agent with a semantic Markdown merge algorithm.
-- Make prompt context, guidance, read scope, or write scope an operating-system security boundary.
-- Change the existing positional change-name contract or add an `archive-plan` command.
+- Provide an all-or-nothing transaction across several specs and a directory move.
+- Coordinate concurrent archive, standalone sync, or manual formal-spec writers.
+- Introduce an operating-system, process, lease, session-owned, or time-based lock for prepare, review, or finalize.
+- Convert standalone `/opsx:sync` into a CLI-owned candidate, validation, and finalize lifecycle.
+- Automatically merge content that changes after a formal commit starts.
+- Roll back reviewed spec writes that completed before an interruption.
+- Guess which source, destination, marker, or receipt owns an orphaned commit.
+- Recover after the user or another tool deletes every primary and source-local copy of commit-critical evidence.
+- Support competing staged plans for one change.
+- Treat prompt read/write scopes as an operating-system security boundary.
+- Add individual scenario removal through `MODIFIED`; omission continues to preserve existing scenarios.
 
 ## Decisions
 
-### D1: Dispatch staged execution inside the existing archive command
+### D1: Use the existing archive command as the staged surface
 
-Extend `ArchiveOptions` with:
+`ArchiveOptions` gains the following staged fields:
 
 ```ts
-type ArchiveStage = 'prepare' | 'status' | 'validate' | 'finalize' | 'abort' | 'cleanup';
+type ArchiveStage =
+  | 'prepare'
+  | 'status'
+  | 'validate'
+  | 'finalize'
+  | 'resolve'
+  | 'repair'
+  | 'abort'
+  | 'cleanup';
+
+type ArchiveRepairResolution =
+  | 'reconstruct-plan'
+  | 'resume-source'
+  | 'adopt-destination'
+  | 'quarantine-source-and-adopt-destination'
+  | 'rebind-destination';
 
 interface ArchiveOptions {
   stage?: ArchiveStage;
   includeSpec?: string[];
   excludeSpec?: string[];
   validation?: string;
+  approval?: string;
+  recovery?: string;
+  resolution?: ArchiveRepairResolution;
+  archiveName?: string;
   // existing options remain
 }
 ```
 
-`ArchiveCommand.execute()` validates option combinations and dispatches to a staged archive service when `stage` is present. With no stage, it continues through the existing direct path and keeps the current flags, prompts, and output contract.
+`prepare`, `status`, `validate`, `finalize`, `resolve`, `repair`, and `abort` require a change name. Root-level `cleanup` rejects a change name. Selection options are valid only for `prepare`; `--skip-specs` creates a move-only plan. `--archive-name` is valid for prepare and for a `rebind-destination` repair only. `--recovery` is required for resolve and repair and is also accepted by recovery-mode validate/finalize. `--resolution` is valid only for repair. Staged invocations reject `--no-validate`. Finalize requires `--validation` and `--approval`. Repair without `--approval` is a non-mutating preview that freezes the selected decision and explicit inputs into a repair review and returns its approval token; executing the returned repair requires that token and `--yes` in JSON mode.
 
-Stage-specific rules:
+An archive name is one validated basename, not a path. It rejects separators, traversal, platform aliases, reserved marker names, and collision with the active change or generated state. When omitted, the existing local-date naming rule remains authoritative. Prepare reports a currently observable default-name collision before candidate work, while finalize still binds and rechecks the actual destination for its commit date.
 
-- `prepare`, `status`, `validate`, `finalize`, and `abort` require a change name. Root-level `cleanup` rejects a change name.
-- `--include-spec <capability>` and `--exclude-spec <capability>` are repeatable and valid only for `prepare`.
-- Omitting selection includes every discovered concrete specs output. Includes select exactly those capabilities. Excludes include every discovered capability except those named. When both are present they must be disjoint and the response reports the resulting complete partition.
-- Duplicate, unknown, or overlapping include/exclude values and unsupported skip/selection combinations fail before plan publication. `--skip-specs` selects none.
-- Staged invocations reject `--no-validate`.
-- `finalize` requires `--validation`; other stages reject it.
-- Human finalize prompts unless `--yes` is supplied; JSON finalize requires `--yes`.
-- Root-selection options apply to every stage. Plan loading derives the active-plan key from the selected root and change identity.
+The command returns versioned JSON with structured next actions. Approval tokens are opaque identifiers stored with a validation or repair-review record and bind its plan ID, validation or recovery ID, review path, review hash, byte length, delivery mode, payload-manifest hash, selected repair decision, and every explicit repair input. Generated skills execute returned command and argument arrays instead of reconstructing staged or recovery commands.
 
-Direct archive acquires the same root mutation lock around its existing formal writes and move. Standalone sync performs semantic work in candidates and delegates its short formal write phase to a CLI-owned, base-hash-checked commit under that lock. This serializes every cooperative OpenSpec main-spec writer without holding a lock during agent work.
+Alternative considered: a separate `archive-plan` command. Keeping one archive command preserves discoverability and reuses the existing root/store selection surface.
 
-### D2: Use one durable active plan per change
+### D2: Derive state from a small single-plan record
 
-Derive the plan root from the selected planning home with:
+The selected planning home owns generated state at:
 
 ```ts
 path.join(path.dirname(changesDir), '.archive-plan')
 ```
 
-Do not derive it from the current working directory.
-
 ```text
 openspec/.archive-plan/
 ├── .gitignore
-├── locks/
-│   └── mutation.lock
-└── active/<change-key>/
-    ├── manifest.json
-    ├── candidates/
-    │   └── specs/<capability>/spec.md
-    ├── validations/<validation-id>/
-    │   ├── record.json
-    │   └── specs/<capability>/spec.md
-    ├── current-validation.json
-    ├── commit.json       # appears when formal writes begin
-    └── completed.json    # retained completion receipt
+├── active/<change-key>/
+│   ├── manifest.json
+│   ├── bases/specs/<capability>/spec.md
+│   ├── candidates/specs/<capability>/spec.md
+│   ├── validations/<validation-id>/
+│   │   ├── record.json
+│   │   ├── review.diff
+│   │   ├── payload-manifest.json
+│   │   └── specs/<capability>/spec.md
+│   ├── resolutions/<recovery-id>/
+│   │   ├── record.json
+│   │   ├── candidate/specs/<capability>/spec.md
+│   │   └── validations/<validation-id>/...
+│   ├── conflicts/<conflict-id>/
+│   │   ├── record.json
+│   │   └── current/specs/<capability>/spec.md
+│   ├── repairs/<recovery-id>/record.json
+│   ├── quarantine/<recovery-id>/...
+│   ├── current-validation.json
+│   └── commit.json
+├── completed/<commit-token>/
+│   └── <retained plan and immutable review evidence>
+├── receipts/<change-key>/<commit-token>.json
+└── tmp/
 ```
 
-`change-key` is a deterministic safe key derived from the root fingerprint and validated canonical change identity. It is an internal path component, not caller input. Validation IDs use one lowercase UUID lexical form; caller-supplied validation IDs are checked before path construction and resolved under the selected plan root with containment checks.
+After `commit.json` is durable and before the first formal-spec replacement, finalize also publishes a reserved source-local recovery capsule under the active change. The capsule contains an ignore-all `.gitignore`, the validated commit record, exact immutable reviewed specs, persisted bases or absence records, payload manifest, and identity hashes needed to reconstruct the active plan. The capsule path and every file in it use explicit generated constants, are hidden from normal source-control discovery by that local ignore file, and are excluded from the reviewed user-payload manifest. A complete capsule is published from a temporary sibling and is carried by the directory rename into the destination.
 
-`manifest.json` is immutable after prepare. A complete plan is built in a generated temporary sibling and published by renaming it to the deterministic active path. Publication collision means the change already has prepared, validated, committing, or completed state; prepare returns that state and a structured status action rather than creating a competing plan.
+`change-key` is a deterministic safe key derived from the selected root identity and validated change name. Every manifest also has a random immutable `planId`, so a retained receipt and a later active change with the same name are different archive instances. Caller input never becomes an internal path without validation and containment checks.
 
-Each successful validation publishes a new immutable UUID snapshot and atomically advances `current-validation.json`. The prior validation identifier immediately becomes ineligible for finalize and its snapshot becomes explicit generated cleanup state. Once `commit.json` exists, the current validation pointer is fixed to the commit-bound identifier.
+Existing included bases are stored byte-for-byte under `bases/`; prepared absence remains an explicit typed manifest entry. Candidates never double as base storage because agent reconciliation is allowed to replace their contents. Validation, review generation, conflict diagnosis, and recovery always refer to the immutable base file or absence record.
 
-The plan root contains an ignore-all `.gitignore`. Aborted plans are removed. Completed plans retain `completed.json` for a documented receipt period so retries and status can return the authoritative prior result. Root-level cleanup removes only explicit generated superseded validations, abandoned publication temporaries, and completed plan directories whose receipts exceed that period. It never removes prepared, validated, or committing plans automatically.
+The plan has no competing head or successor-generation chain. State is derived from recognized files rather than a second mutable state machine; approved post-commit conflict resolutions are append-only amendments to one commit lineage:
 
-The workspace is durable workflow state, not a source repository artifact. Documentation warns that force-cleaning ignored files can destroy recovery state. Status reports committing state prominently before users run workspace cleanup tools.
+- no plan directory: `none`;
+- manifest and candidates only: `prepared`;
+- current validation without commit: `validated`;
+- commit without completion: `committing`;
+- commit with an unexpected target: `conflicted`;
+- matching completion receipt: `completed`;
+- recognized but malformed, incomplete, or internally inconsistent plan state: `broken`;
+- commit-bound source, destination, or marker evidence that cannot be matched safely: `orphaned`.
 
-### D3: Keep trusted state small and immutable
+Prepare builds a complete temporary plan and publishes it with an atomic rename. Repeating prepare returns the existing plan status. Normal validation builds a complete temporary snapshot and atomically replaces `current-validation.json`. Once `commit.json` exists, the original validation is fixed; a conflict resolution can add only a recovery-scoped immutable validation and append-only commit amendment bound to that original lineage.
 
-The immutable manifest contains only machine-owned authority:
+After a completion receipt is durable, the completed plan is rotated from the reusable active slot to `completed/<commit-token>/` and indexed by an explicit receipt path. A crash before or during rotation is recoverable from the matching plan ID, commit token, and receipt. A later active change with the same name can publish a new plan without being mistaken for the retained receipt. Completed plans and receipts are retained for 30 days from the receipt timestamp; cleanup removes both only through their validated explicit ownership records.
 
-```ts
-interface ArchivePlanManifestV1 {
-  version: 1;
-  rootFingerprint: string;
-  changeName: string;
-  changeKey: string;
-  changePath: string;       // planning-root relative
-  archivePath: string;      // planning-root relative
-  skipSpecs: boolean;
-  specSelection: {
-    mode: 'all' | 'include' | 'exclude' | 'mixed' | 'none';
-    requestedIncluded: string[];
-    requestedExcluded: string[];
-    included: string[];
-    excluded: string[];
-  };
-  createdAt: string;
-  warnings: ArchivePlanWarning[];
-  changeInventory: ArchiveTreeEntry[];
-  files: ArchivePlanFile[];
-  promptSourceHashes: ArchivePromptSourceHashes;
-}
-```
+`broken` and `orphaned` are fail-closed states. Status reports the damaged records and safe read-only evidence. Normal abort, finalize, and cleanup preserve them; only a returned evidence-bound repair action may change recovery state.
 
-Each included file records capability, delta/base/candidate/target relative paths, prepared delta hash, and either the prepared base hash or prepared target absence. Excluded files carry no candidate or target-write authority.
+A valid source-local capsule can repair a missing or damaged primary active-plan record only when its plan, validation, commit, source, destination, payload, and target evidence form one consistent lineage. Reconstruction builds a complete temporary active plan and publishes it atomically; it never combines records from competing lineages. If both primary and capsule evidence exist but disagree, status reports `orphaned` instead of selecting one. Loss of every evidence copy remains unrecoverable by design.
 
-The plan does not persist project context, guidance, or rule text. It records hashes for their source files and returns the current serializable `agentWork` in prepare. Status may reconstruct `agentWork` from current sources only when every recorded source hash still matches; otherwise it marks candidate work stale and directs the caller to abort and prepare again. Operation summaries, included/excluded mappings, and explicit path authority remain derivable from the manifest.
+These atomic publications protect against a process stopping during a file update. They do not provide a concurrent multi-process workflow guarantee.
 
-Normal plan loading uses explicit constant-defined paths. It does not glob for required plan files.
+Alternative considered: successor records plus a mutable head revision. A single-writer user workflow does not need competing heads or automatic successor records, so the state can be derived from the durable files that already define recovery.
 
-### D4: Prepare owns discovery and candidate creation
+### D3: Prepare owns discovery, selection, and candidate creation
 
 Prepare performs the deterministic front half:
 
-1. Resolve the selected root and validate the change path with containment and canonical-path checks.
-2. Gather artifact readiness and task progress through shared core helpers.
-3. Obtain concrete delta paths exclusively from `artifactPaths.specs.existingOutputPaths`.
-4. Apply the all/include/exclude/mixed/none selection rule and reject duplicate, unknown, overlapping, or unsupported capability selections.
-5. Resolve the archive name using existing local-date/no-double-prefix behavior and reject an existing destination.
-6. Snapshot the complete active change tree without following symlinks outside it. Record regular-file hashes, directory entries, and symlink target text so a moved tree can be identified after a crash.
-7. Snapshot selected deltas, included main-spec base hashes/target absence, prompt-source hashes, warnings, and the complete resulting selection.
-8. Create candidates only for included deltas:
-   - copy an existing main spec byte-for-byte;
-   - create the shared Purpose-aware canonical skeleton for a new capability.
-9. Publish the complete immutable plan directory at the change's deterministic active-plan path, or return the already-existing state without replacing it.
+1. Resolve the selected root and canonical active change path.
+2. Gather artifact and task readiness through shared helpers.
+3. Obtain concrete delta specs from `artifactPaths.specs.existingOutputPaths`.
+4. Validate and apply the all/include/exclude/none selection.
+5. Record the complete discovered capability set and every delta hash, persist every included main-spec base byte-for-byte or record typed absence, and record path authority, readiness warnings, prompt-source hashes, and any explicit archive name.
+6. Create one candidate for every included capability by copying the persisted base bytes or using the shared Purpose-aware new-spec skeleton.
+7. Publish the complete plan and return candidate-only `agentWork` plus structured validate, status, and abort actions.
 
-Prepare does not perform semantic merging, modify main specs, move the change, or acquire the root mutation lock.
+Prepare does not write formal specs, move the change, resolve the archive date, or freeze unrelated files in the change directory. It does perform a best-effort same-filesystem check against the nearest existing archive-root parent and reports an observed default or explicit destination collision before candidate work; finalize remains authoritative because the date, mount topology, and destination may change later. Validation and finalization re-discover the complete delta capability set, so a newly added, removed, or renamed delta invalidates the prepared partition even when it would have been excluded. Selected delta files and other recorded authority inputs must remain unchanged.
 
-Prepare returns:
+Validation builds a complete `lstat` payload manifest for every file, empty directory, mode, and symlink target under the active change, excluding only explicit archive-owned recovery paths. The review presents the complete formal-spec diff separately from this exact payload path/hash manifest so the user can tell which bytes are being written to formal specs and which existing bytes are merely being moved. Artifact and task readiness is recalculated at validation and immediately before commit. Any readiness or payload-manifest difference stops finalize before formal writes and returns the validate action so the changed archive scope can be reviewed. After commit starts, payload drift becomes `archive_source_conflict`; the receipt carries the readiness and payload-manifest hash accepted at commit start.
 
-- `archivePlan`: change-bound state, selection, warnings, work directory, and confirmation need;
-- `agentWork`: semantic inputs and exact scopes, or `null` for move-only work;
-- `nextActions`: structured status, validate, and abort command/argument arrays.
+Includes select exactly the named capabilities. Excludes select every discovered capability except the named capabilities. When both are supplied, the caller must provide a disjoint expected partition. Unknown, duplicate, overlapping, or drifting selections fail without formal mutation. `--skip-specs` selects none.
 
-### D5: Agent work is candidate-only
+### D4: Agent work is candidate-only
 
-The staged archive skill passes `agentWork` directly into candidate-mode sync:
+Prepare returns the complete semantic work package:
 
-```text
-read context, guidance, and rules
-→ read each listed delta, optional base, and candidate
-→ write only listed candidate paths
-→ execute the returned validate action
-```
+- selected delta paths;
+- persisted main-spec base paths or typed absence;
+- candidate paths;
+- informational future target paths;
+- project context, archive guidance, specs rules, and operation summaries;
+- explicit read and write scopes;
+- the structured validate action.
 
-The agent does not rediscover deltas, derive paths, open the manifest, broaden selection, write main specs, move the change, or construct staged commands.
+The archive skill passes this package directly into candidate-mode sync. A conflict resolve action returns the same bounded shape extended with the persisted original base, original reviewed snapshot, captured current target, and a recovery candidate initialized from current content. The agent does not rediscover deltas, inspect plan internals, write formal specs, move the change, repair markers, or broaden the returned scope.
 
-`targetPath` is informational until formal commit. Archive-supplied candidate work proceeds to archive validate/finalize. Standalone `/opsx:sync` uses the same candidate shape but returns a structured CLI commit action that binds target paths, prepared base hashes/absence, and candidate hashes without creating an archive plan or moving a change.
+Normal prepared-candidate reconciliation preserves every existing requirement and scenario not explicitly removed by a supported delta operation. Whole-requirement `REMOVED` remains its only removal authority. Conflict recovery starts from captured current content and preserves unrelated current semantics by default; any intentional current-to-recovery removal is authority only after it is exposed in the immutable amendment review and explicitly approved.
 
-The standalone sync commit is intentionally short-lived: the agent finishes all semantic candidate edits first, then the CLI acquires the root mutation lock, rechecks every prepared base, validates candidate structure, atomically writes conflict-free candidates, verifies their hashes, and releases the lock. A base mismatch writes nothing and directs the user to rerun sync from the new main-spec state.
+Standalone `/opsx:sync` without archive-supplied candidate work keeps its existing behavior. Users do not run it while staged finalization is active.
 
-These scopes are workflow contracts, not OS access controls. Formal authority comes from the immutable manifest, validation snapshot, hashes, path checks, and finalize behavior.
+### D5: Validate freezes one complete reviewed snapshot
 
-### D6: Validate creates an immutable reviewed snapshot
+Validate rechecks the selected root, change identity, complete discovered capability set, recorded delta hashes, persisted included base hashes or absence, prompt-source hashes, current readiness, archive payload manifest, and candidate/target path containment. It reads each candidate and payload file once into the byte buffers used for parsing or manifest hashing, immutable storage, and review generation, so those outputs cannot describe different reads of a changing file. It verifies:
 
-Validate loads the immutable plan and rechecks:
+- canonical main-spec structure and parsing;
+- absence of delta-operation headings in candidates;
+- required ADDED, MODIFIED, REMOVED, and RENAMED outcomes;
+- preservation of unaffected requirements and every base scenario not covered by whole-requirement removal.
 
-- selected root/change identity;
-- complete active change inventory;
-- included delta hashes;
-- existing base hashes or continued target absence;
-- archive destination absence;
-- recorded prompt-source hashes when reconstructing agent work;
-- plan and candidate path containment.
+Semantic outcome validation uses one shared parsed requirement/scenario model:
 
-For every candidate, validate reads one stable byte snapshot and:
+- requirement and scenario identities use the same normalization and duplicate/multiplicity rules as direct archive parsing;
+- an existing spec keeps its Purpose, unaffected requirements, and unmentioned scenarios; unrelated semantic additions, removals, and renames fail validation even when the resulting Markdown parses;
+- ADDED content must be present without creating a conflicting duplicate;
+- MODIFIED descriptions and named scenarios must reflect the delta while every base scenario omitted by the delta remains present;
+- RENAMED removes the old identity and establishes the new identity before any MODIFIED outcome is checked against the new name;
+- whole-requirement REMOVED is the only removal authority; scenario omission is not deletion authority;
+- formatting-only changes are visible in the complete review but do not authorize semantic drift.
 
-1. validates main-spec parsing and canonical structure;
-2. rejects delta operation headings;
-3. checks structural outcomes for ADDED, MODIFIED, REMOVED, and RENAMED operations;
-4. checks preservation of existing requirements and scenarios not named for removal/replacement;
-5. creates a complete deterministic unified diff and statistics;
-6. publishes the exact candidate bytes and review metadata under a new immutable validation UUID directory.
+Validation writes the complete deterministic spec diff and payload manifest review to `review.diff`, calculates its byte length, hash, payload-manifest hash, and per-file statistics, and stores the exact candidate bytes under a new lowercase UUID validation directory. It creates an opaque approval token bound to that validation, the exact review delivery metadata, selection, readiness, and payload manifest. Finalize reads only from this immutable validation snapshot and requires the bound token; the token is identity binding, while `--yes` or the interactive prompt remains the user's confirmation.
 
-The validation record binds:
+Each successful validation atomically advances `current-validation.json`. A new validation supersedes the previous finalize action. Validation is rejected after `commit.json` exists.
 
-- root/change identity;
-- validation ID;
-- selected capabilities/delta hashes;
-- prepared base hashes/absence;
-- exact candidate hashes;
-- exact review hashes;
-- validation time.
+Editing a candidate after successful validation leaves the immutable snapshot and review intact but makes that validation ineligible for finalize. Status returns a candidate-changed diagnostic and the structured validate action; a new successful validation receives a new identifier and supersedes the old one.
 
-Finalize reads candidate bytes from the current immutable validation directory, not from the editable candidate workspace.
+`INLINE_ARCHIVE_REVIEW_MAX_BYTES` is a documented constant, initially 256 KiB:
 
-Revalidation creates another immutable validation snapshot and atomically advances the current-validation pointer. The previous ID still identifies its old bytes for diagnostics but is no longer eligible for finalize. If the editable candidate changes, validating it produces a new ID and invalidates previously returned finalize actions.
+- reviews at or below the limit are returned completely inline and by file path;
+- larger reviews return `delivery: "file"`, the complete path, length, hash, statistics, and a structured read action;
+- failure to generate, persist, or hash the complete review publishes no validation identifier.
 
-Move-only validation creates an empty file list and an immutable validation record bound to readiness warnings, selection, archive destination, and change inventory.
+For file delivery, the archive skill uses the structured read action to inspect and present the complete review when tool limits allow. Otherwise it gives the user the durable path, hash, byte length, payload-manifest hash, and statistics and requires explicit acknowledgement that the complete file was reviewed before executing the approval-token-bound finalize action. A summary or model-generated description is never treated as approval of unseen bytes.
 
-The validator checks structural intent, not prose quality. The user-facing review remains the semantic approval boundary.
+Move-only plans produce an immutable validation record with an empty spec diff plus the complete payload manifest, current readiness warnings, selection, and approval token. The confirmation explicitly lists every discovered delta capability that will remain unsynced.
 
-### D7: Use one planning-root mutation lock for formal spec writes
+### D6: Finalize is a single-writer, forward-only, idempotent commit
 
-All OpenSpec-owned formal main-spec mutation and archive movement under one planning root is serialized by `locks/mutation.lock`.
+Finalize operates under the documented single-writer assumption. It does not acquire a finalize, process, lease, or planning-root transaction lock. The assumption is a supported-use precondition, not an enforced mutual-exclusion guarantee.
 
-The lock is used by:
+A fixed lock timeout would not provide correctness: a short timeout can expire while finalization is still active, while a long timeout can block recovery after the owning session or process ends. Treating the same change or session as reentrant would also allow two live finalize processes to write concurrently. This workflow instead makes a later invocation resumable through the durable commit record, validation identifier, commit token, and target hashes after the earlier process has stopped; it does not make a live lock reentrant.
 
-- staged finalize;
-- the standalone sync CLI commit that applies agent-produced candidates after rechecking their recorded main-spec base hashes;
-- abort, while it checks/removes a plan;
-- completed-receipt garbage collection;
-- direct archive during its existing spec-write/move section.
+A future formal-spec writer lock cannot safely cover archive finalize alone. Direct archive, staged archive, standalone `/opsx:sync`, bulk orchestration, and every other cooperative formal-spec writer would need to participate in the same commit gate. Standalone sync currently performs long-running agent work and writes formal specs directly, so making it participate would require either a cross-session lease with ownership and recovery semantics or a candidate/validate/finalize workflow whose CLI-owned commit holds only a short process lock. Both are intentionally outside this change. Manual file edits would remain outside cooperative locking in either design.
 
-It is not used by archive/sync discovery, candidate editing, validate, diff review, or user confirmation. Standalone sync therefore does all semantic reconciliation before invoking one short CLI-owned commit.
+Without that coordination, two finalize or sync writers can start closely enough that both observe the same prepared base before either write becomes visible. Per-target rechecks and final hash verification reduce and often expose this race, but do not prove mutual exclusion or prevent every last-writer outcome. This residual risk is accepted under the unsupported-concurrency contract.
 
-The lock contains an owner token and process metadata. Release removes the lock only when the stored token matches the holder. A lock is never stolen solely because its mtime exceeds a fixed threshold. Crash recovery uses an explicit owner-liveness/repair policy and actionable diagnostics.
+Before creating `commit.json`, finalize:
 
-A single coarse lock intentionally serializes unrelated formal spec commits. These writes are low frequency, and this avoids per-target locks, lock ordering, target aliases, and deadlock analysis. Every archive finalize, direct archive, and standalone sync commit rechecks relevant base hashes after acquiring the lock, so a waiting writer observes earlier committed work before writing.
+1. Requires the requested identifier to equal the current validation and the opaque approval token to match that validation's complete review metadata.
+2. Rechecks root/change identity, the complete discovered capability set, recorded delta hashes, persisted base hashes or absence, current candidate hashes, prompt sources that remain authority, payload manifest, and path containment.
+3. Recalculates artifact/task readiness and rejects a difference from the current validation before formal writes.
+4. Classifies every target as prepared base/absence, reviewed candidate, or unexpected content.
+5. Resolves the explicit archive name or the local-date default while preserving an existing `YYYY-MM-DD-` prefix.
+6. Verifies the final archive destination does not exist and the active source plus nearest existing archive-root parent are observably on the same device.
 
-The direct no-stage path snapshots the main-spec bases used for its in-memory rebuild. If any base changed before it acquires the mutation lock, it rebuilds and revalidates from the locked current state before writing; it never writes an earlier rebuild over a newer base.
+Any unexpected target before commit leaves the plan abortable and requires abort/re-prepare. A destination collision before commit can also be handled by aborting and preparing with an explicit archive name. A conflict-free preflight atomically creates `commit.json`, binding the validation ID, approval token identity, reviewed hashes, payload-manifest hash, local archive date, archive name, archive path, and a random commit token. Finalize then publishes the matching source-local recovery capsule before the first formal-spec write; if capsule publication fails, no formal target is changed.
 
-Hash checks are authoritative only for writers participating in this protocol. External editors can still change files outside OpenSpec. Finalize reads each target again immediately before replacement and verifies all candidate hashes afterward; a non-participating writer that races the final replacement remains an external filesystem race and is reported accurately if detected, not described as an operating-system security guarantee.
+For each included target in deterministic normalized order:
 
-### D8: Finalize makes idempotent forward progress
+- base hash or prepared absence means pending: atomically replace it with the immutable reviewed bytes;
+- reviewed candidate hash means already applied: skip it;
+- any other value means conflicted: preserve the formal target, atomically snapshot its exact current bytes and hashes under a generated `conflicts/<conflict-id>/` record, stop, and return a read-scoped `agentRecovery` evidence package for the persisted base, reviewed snapshot, current evidence, delta source, and relevant plan metadata.
 
-Finalize acquires the root mutation lock and follows this order:
+The archive skill, rather than the user, reads the conflict package, compares base/reviewed/current content, identifies the likely source and semantic effect of newer work, and presents a concrete recovery plan. `resolve --recovery <id>` creates a plan-owned recovery candidate initialized from the captured current target and returns only the original base, original review, captured current target, selected delta, recovery candidate, rules, scopes, and structured recovery validate action. Candidate reconciliation may restore the original review or preserve and merge newer work, but it writes only the recovery candidate.
 
-1. If `completed.json` exists and matches the plan, return its authoritative success result.
-2. Load `current-validation.json`, require the requested validation identifier to match it, and verify validation/root/change identity.
-3. Recheck the complete change inventory, included delta hashes, every included main-spec base/candidate state, path safety, and source/destination state. An existing destination is accepted only by the commit-bound crash-after-rename recovery case described below.
-4. If no commit marker exists, preflight every target as prepared-base/absence, reviewed-candidate, or conflict. A conflict stops while the plan is still abortable.
-5. After conflict-free preflight and immediately before the first formal write, create `commit.json` atomically. It binds the plan to the chosen validation ID and reviewed hashes.
-6. If `commit.json` already exists, require the same current validation identity and resume that commit.
-7. For each target in deterministic normalized order, read its current state again:
-   - current hash/absence equals the prepared base state: write the reviewed validation snapshot atomically;
-   - current hash equals the reviewed candidate hash: treat it as already completed;
-   - otherwise: stop with `archive_commit_conflict` and do not overwrite the newer content.
-8. Verify every included target now equals its reviewed candidate hash.
-9. Rename the active change to the prepared archive path.
-10. Write `completed.json` atomically with the archive result and applied-spec summary.
-11. Return the receipt and release the lock.
+Recovery-mode validate requires the captured current target to remain unchanged, verifies canonical structure and the original delta outcomes, and produces a complete amendment review from captured current bytes to the recovery candidate. Because the user is explicitly resolving an exceptional conflict, unrelated differences are permitted only when they are visible in that amendment review; they are never inferred as authorized by the original delta. A new validation and approval token bind the original validation, conflict evidence, current target hash, amendment bytes, and payload manifest. Recovery-mode finalize requires both the recovery ID and new approval token, appends an immutable commit amendment, atomically applies the resolved target, and resumes the original commit. The receipt records the original review and every approved amendment.
 
-There are no backups and no rollback. Every formal spec byte written by this path was already validated and reviewed. If writing or rename fails, `commit.json` and the validation snapshot remain, and the next finalize repeats the classification above.
+Neither the skill nor the CLI silently overwrites the current target, invokes standalone sync during the commit, claims an automatic rebase, or applies a recovery candidate without a new immutable review and user approval.
 
-Once `commit.json` exists, abort is rejected. The plan must be resumed or manually repaired if an external conflict prevents progress.
+Every retry before movement also rechecks the complete discovered delta set, recorded source-authority hashes, and reviewed payload manifest. Drift after `commit.json` exists reports `archive_source_conflict`, snapshots the safe current evidence, preserves already applied specs and the active change, and returns an evidence-bound resolve or repair investigation package. It cannot return to abort/re-prepare because forward-only commit has already begun, and it never moves a change whose current payload no longer matches the approved archive scope.
 
-If a process stops after rename but before `completed.json`, retry first requires this plan's matching `commit.json`, then observes:
+Atomic replacement uses an exclusively created generated temporary sibling in the target directory, writes the exact reviewed bytes, syncs the file, uses the platform-appropriate replace primitive, syncs the parent directory where supported, and verifies the resulting target hash. The guarantee covers process interruption and retry; it is not described as a multi-file or hardware power-loss transaction where a platform cannot provide that durability. New target directories are created and containment-checked before the sibling is opened. Windows transient sharing failures use bounded retries and leave the reviewed snapshot unchanged; exhausted retries preserve the owned temporary for recognized cleanup and return a retryable diagnostic. Existing file mode is preserved where meaningful, while new files use the documented default mode.
 
-- active source absent;
-- prepared archive destination present;
-- archive tree matching the prepared change inventory;
-- every included target matching the reviewed candidate.
+After all targets match, finalize re-verifies every target, source authority, payload entry, and the bound destination, then moves the active change. If the destination appeared after `commit.json` was created, finalize reports `archive_destination_conflict`, preserves the source and applied specs, keeps the original commit-bound path, and returns agent-investigation guidance. Normal finalize never chooses a new date or overwrites the destination; only an explicitly approved repair may append a new destination binding.
 
-It then writes the completion receipt and returns success. If source/destination identity is ambiguous, it preserves both evidence and fails closed.
+Immediately before movement finalize exclusively creates and syncs a reserved commit-token marker inside the active change. The marker binds the plan, commit token, source, destination, validation lineage, payload manifest, and recovery-capsule hash. A pre-existing or mismatched marker is `orphaned` recovery evidence, not overwrite authority. A successful directory move carries the marker and capsule into the archive destination. Finalize then writes the authoritative receipt, rotates the completed plan out of the reusable active slot, and removes the matching marker and capsule from the archived change. Failure to remove matching recovery residue after receipt durability is cleanup work, not archive failure.
 
-This design provides exactly-once observable completion through a retained receipt, not rollback-based atomicity.
+This ordering handles a stopped process:
+
+- before a target write: the base hash remains and retry writes it;
+- after a target write: the candidate hash is recognized and retry skips it;
+- after the marker is written but before movement: retry recognizes the matching marker in the active source and continues the same commit;
+- after the directory move but before the receipt: source is absent and the destination carries the matching commit token, so retry writes the receipt;
+- after the receipt but before marker removal, plan rotation, or response: retry returns the same receipt and safely completes only matching generated cleanup.
+
+There is no rollback. Once `commit.json` exists, abort is unavailable. A conflicting target is never overwritten by normal finalize. Under the single-writer usage contract, post-commit conflicts are exceptional: the archive agent investigates the preserved evidence, explains whether restoring the reviewed bytes or preserving newer work is safer, prepares the selected recovery candidate, and asks the user to approve its exact amendment review. The user is not expected to compare hashes or edit formal files manually. Silent overwrite and automatic rebase remain outside this change.
+
+### D7: Status, abort, and cleanup expose recovery without hidden mutation
+
+Status derives and reports `none`, `prepared`, `validated`, `committing`, `conflicted`, `broken`, `orphaned`, or `completed`. It includes plan identity, current validation identity, approval binding, review delivery metadata, payload-manifest hash, included/excluded capabilities, applied and pending targets, active/archive location, conflict or damaged-state evidence, diagnostics, and structured legal next actions. Conflicted, broken, and orphaned responses include an agent-investigation package and opaque recovery ID rather than directing the user to inspect internal records manually.
+
+Abort removes a prepared or validated plan that has no `commit.json`. It leaves formal specs and the active change untouched. Once commit exists, abort reports resume or agent-investigation guidance instead of deleting evidence. A completed plan returns its receipt.
+
+Root-level cleanup removes only explicitly recognized generated temporaries, superseded validation snapshots, residual matching markers or capsules from completed archives, quarantined identical source copies whose recovery receipt has passed the 30-day retention boundary, and completed plan/receipt pairs older than 30 days from their validated receipt timestamp. It never removes prepared, validated, committing, conflicted, broken, or orphaned plans. Cleanup reports the plan ID, ownership record, age, and reason for every deletion. Cleanup and archive operations rely on the user-facing single-writer contract rather than an operating-system lock.
+
+The plan directory and source-local capsule are generated recovery state. Documentation warns that force-cleaning all generated copies during a commit destroys automatic recovery. The duplicate capsule tolerates loss of either the primary plan or capsule, not deliberate or accidental deletion of both. The product describes the guarantee as resumable while at least one complete consistent recovery lineage is retained, not as a database transaction.
+
+### D8: Orphaned and broken state use evidence-bound repair
+
+Status performs read-only discovery of primary records, exact reserved capsule names in the active source, and bounded archive destinations that contain the reserved capsule or marker. It snapshots a deterministic evidence manifest and returns a recovery ID plus the repair decisions whose preconditions are currently provable. The caller previews one decision, including any explicit new archive name, through non-mutating `repair`; that preview persists a complete repair review and returns an approval token bound to the evidence, decision, and inputs. If evidence changes, every preview and previously returned repair action becomes stale.
+
+`repair` accepts only a structured action returned by status and never accepts an arbitrary source, destination, marker path, or delete target:
+
+- `reconstruct-plan` is legal when one complete capsule lineage matches the current source or destination and formal targets. It atomically republishes the primary plan and returns status without changing formal specs or movement state.
+- `resume-source` is legal when the active source and its payload match, the bound destination is absent, and the only defect is a missing or foreign marker. Repair preserves any foreign marker as evidence, publishes the commit-bound marker, and returns the normal finalize resume action.
+- `adopt-destination` is legal when the active source is absent and the bound destination exactly matches the reviewed payload, capsule, commit, and target evidence. Repair writes the authoritative receipt and performs only matching generated cleanup.
+- `quarantine-source-and-adopt-destination` is legal when both locations contain the same reviewed payload lineage. Repair atomically moves the duplicate active source into the plan-owned quarantine, writes the receipt for the destination, and retains the quarantine until its receipt-bound cleanup boundary; it does not delete the duplicate during repair.
+- `rebind-destination` is legal when the active source exactly matches the reviewed lineage but the bound destination is occupied by foreign content. It requires an explicit new validated archive basename whose destination is absent, appends the same immutable destination amendment containing the old and new bindings to the primary plan and source-local capsule, and returns the normal finalize resume action. It never moves or overwrites the foreign destination.
+
+If no action's preconditions are provable, status offers only `preserve-and-stop` plus a durable recovery report. Repair never combines disagreeing records, adopts a merely similar tree, recursively deletes evidence, or treats user approval as a substitute for missing bytes. Source, destination, marker, capsule, plan, validation, target, or payload changes after investigation invalidate the recovery token and require a new status investigation.
 
 ### D9: Staged movement is rename-only
 
-Staged finalize uses a same-filesystem directory rename. It does not fall back to recursive copy/remove.
+Staged finalize renames the active change within the selected planning home:
 
-- A transient `EPERM`, sharing violation, or similar rename failure leaves reviewed spec writes in place, keeps the active change, retains `commit.json`, and returns a retryable diagnostic.
-- `EXDEV` returns an explicit unsupported cross-filesystem diagnostic. The user must place the planning root on one filesystem or move it through an external/manual workflow.
-- Finalize never publishes a partially copied archive directory.
+- same-filesystem rename completes the archive;
+- Windows sharing violations and similar temporary handle failures return a retryable diagnostic while specs remain applied and the change remains active;
+- `EXDEV` returns an explicit unsupported diagnostic and does not copy or remove the source.
 
-This is a deliberate staged-path limitation. The direct no-stage path retains its existing compatibility behavior in this change.
+Prepare and finalize compare the source device with the nearest existing destination parent when the platform exposes stable device identity. A known mismatch fails before commit; the rename still handles `EXDEV` because mount topology can change or evade preflight. This keeps staged publication simple and prevents a partially copied archive from appearing at the final path.
 
-### D10: Status, abort, and cleanup manage durable state explicitly
+### D10: Direct archive uses the same commit primitives behind its existing interface
 
-Status resolves the deterministic active-plan path from the selected root and change name. It reports one of `none`, `prepared`, `validated`, `committing`, or `completed`, the current validation identity when eligible, already-applied targets, active/archive location, freshness diagnostics, and structured legal next actions. It never mutates formal state.
+Without `--stage`, the command preserves its positional argument, prompts, flags, JSON result fields, deterministic delta builder, and supported movement behavior. Internally it:
 
-Abort acquires the root mutation lock and:
+1. creates a direct plan and deterministic candidates;
+2. snapshots the accepted candidate bytes and archive payload manifest;
+3. invokes the same target classification, recovery capsule, atomic spec replacement, commit marker, movement, repair, and receipt logic;
+4. maps the result back to the existing direct output contract.
 
-- removes a prepared plan when neither `commit.json` nor `completed.json` exists;
-- reports the existing completion receipt when the plan already completed;
-- rejects a plan with `commit.json` and directs the caller to resume finalize;
-- leaves main specs and the active change untouched for every successful abort.
+Direct `--no-validate` may skip its existing optional validators, but it still performs path containment, exact candidate snapshotting, target classification, scenario-preservation, and commit checks.
 
-A validation snapshot alone does not prevent abort. All validation directories are plan-owned and are removed with an uncommitted plan.
+A direct invocation encountering an active staged plan reports that staged status instead of creating a competing plan. A stale uncommitted direct plan is rebuilt on a later direct invocation.
 
-Root-level cleanup acquires the mutation lock and removes only explicitly recognized generated publication temporaries, superseded validations, and completed plans older than the documented receipt period. It reports prepared, validated, and committing plans but never removes them. Because ignored workspace state can be destroyed by external cleanup tools, documentation treats committing state as recovery-critical and exposes it through status.
+The direct movement policy retains cross-device and Windows compatibility through a generated temporary directory under the destination archive root. Immediately before copy it builds a complete `lstat` tree manifest containing relative paths, regular-file bytes and hashes, empty directories, file modes where meaningful, and symbolic-link target text without following links outside the source. Copy reproduces only those recorded entries, verifies the temporary tree, and rechecks that the source still matches the manifest before atomically publishing the final name on the destination filesystem.
 
-### D11: Resolve paths defensively
+Source removal occurs only after publication and another source-manifest match. A stopped copy leaves no partial final archive. If publication succeeded but source removal did not, retry recognizes the matching commit marker and manifest: it removes an unchanged source, but preserves both locations and returns agent-led investigation when the source changed. Platforms that cannot safely recreate a recorded symbolic link fail before publication and leave the source untouched rather than copying the link target as a regular file.
 
-All paths use `path.join()`/`path.resolve()`. Containment uses `path.relative()`, canonical `realpath` for existing paths, and the nearest existing canonical parent for targets not yet created.
+### D11: Bulk archive is sequential
 
-Reject:
-
-- malformed validation IDs or internal change keys;
-- absolute manifest entries;
-- `.`/`..`, NUL, alternate-drive, or containment escapes;
-- candidate/target symlink escapes;
-- Windows drive changes, case-insensitive aliases, device names, alternate data-stream syntax, and trailing-dot/space aliases;
-- change names or capability identifiers that resolve to a different path than their validated canonical identity.
-
-The change inventory uses `lstat` and records symlink target text without following it. Finalize rechecks paths after acquiring the mutation lock.
-
-Atomic individual-file replacement must have explicit Windows behavior and tests; it may retry documented transient sharing failures but must never replace an unrelated path.
-
-### D12: Bulk archive composes single-change commits
-
-Bulk first gathers status for every selected change, investigates capability conflicts, and records:
-
-- a deterministic change order;
-- an explicit included capability list for every change;
-- an explicit excluded capability list and rationale.
-
-Bulk passes every included capability with repeated `--include-spec` and, when the included set is non-empty, every explicitly excluded capability with repeated `--exclude-spec`. For an empty included set it uses `--skip-specs`; prepare then returns every discovered capability as excluded for comparison with the inspected expected partition.
-
-Prepare rediscovers capabilities and returns its complete resulting partition. Before candidate work, bulk compares that partition with the inspected included/excluded sets. Any added, removed, or reclassified capability causes the newly published uncommitted plan to be aborted and the batch item to fail as selection drift. Only included capabilities receive candidates, validation snapshots, and formal writes. Excluded deltas are reported as `sync-skipped`.
-
-Changes with overlapping included targets run the complete lifecycle sequentially:
+Bulk determines a stable change order, explicit included/excluded capability partition, and optional explicit archive name for every selected change. It then runs the complete lifecycle one item at a time:
 
 ```text
-prepare A → agent A → validate A → confirm A → finalize A
-prepare B against A's committed result → agent B → validate B → confirm B → finalize B
+prepare A → reconcile A → validate A → confirm exact approval A → finalize A
+prepare B from A's completed state → reconcile B → validate B → confirm exact approval B → finalize B
 ```
 
-Non-overlapping changes may prepare and validate independently, but finalization is serialized by the root mutation lock and each result is confirmed separately.
+Prepare returns the complete discovered partition, and bulk compares it with the inspected partition before candidate work. Drift aborts that uncommitted item. Completed earlier changes remain complete when a later item fails or the user cancels. Later items are reported as pending or skipped; bulk never runs two formal commits concurrently.
 
-Bulk completion is intentionally partial:
+Mixed-schema and move-only changes use the same review and confirmation contract with no candidates.
 
-- completed changes remain completed;
-- a failed change is reported failed or retryable;
-- dependent later changes are skipped;
-- unrelated changes may continue;
-- mixed-schema/move-only changes use the same validation/finalize contract.
+### D12: Paths and identifiers are defensive and cross-platform
 
-### D13: Detect old CLIs narrowly
+All paths use `path.join()` and `path.resolve()`. Existing paths use canonical `realpath`; new targets use the nearest existing canonical parent. Containment uses `path.relative()` and rejects traversal, root escape, malformed identifiers, absolute stored entries, and symlink redirection.
 
-Generated archive skills probe staged status before starting work:
+Capability IDs retain their discovered forward-slash logical form for ordering and records, but selection and target authority reject duplicate normalized IDs and any two capabilities that resolve to the same canonical or platform-equivalent target. Rechecks occur immediately before reads, temporary creation, replacement, and movement. Under the documented single-writer assumption these checks are defensive path validation, not a claim to defeat a hostile process that swaps filesystem objects between every check and use.
 
-- a versioned staged response or staged diagnostic means staged support exists and every real failure is authoritative;
-- an exact unsupported-option/help capability result means the CLI is older, so the skill announces legacy mode and follows the retained legacy workflow;
-- an invalid response from a CLI advertising staged support is an error, not permission to write main specs or move directories directly.
+Windows checks also reject alternate drives, device names, alternate data streams, trailing-dot/space aliases, and case-insensitive aliases of protected paths. Validation and recovery identifiers use one lowercase UUID form and are checked before path construction. Explicit archive names are validated as basenames before any destination path is resolved.
 
-### D14: Use explicit diagnostics and versioned JSON
+Generated temporary files, validation directories, direct-copy directories, and commit-token markers are tracked by explicit constants and ownership records. Cleanup never discovers deletion authority from an unrestricted glob.
 
-Staged diagnostics include:
+### D13: Generated skills detect staged support narrowly
 
-- `archive_stage_invalid`
-- `archive_plan_invalid`
-- `archive_plan_not_found`
-- `archive_plan_exists`
-- `archive_plan_completed`
-- `archive_plan_commit_started`
-- `archive_plan_stale`
-- `archive_plan_validation_failed`
-- `archive_validation_required`
-- `archive_validation_not_found`
-- `archive_validation_not_current`
-- `archive_spec_selection_invalid`
-- `archive_spec_selection_conflict`
-- `archive_spec_selection_drift`
-- `archive_commit_busy`
-- `archive_commit_conflict`
-- `archive_move_retryable`
-- `archive_cross_device_unsupported`
-- `archive_completion_recovery_failed`
-- `archive_cleanup_invalid`
-- existing `archive_confirmation_required`
+Archive skills probe staged status before work begins:
 
-Every staged JSON response contains `contractVersion`, `archivePlan` (or `null`), the root envelope, and structured next actions/diagnostics where applicable. Status is the authoritative recovery surface. On retryable finalize failure, the response clearly distinguishes already-applied specs from the still-active change and returns the exact resume action.
+- a versioned staged response or recognized staged diagnostic selects the staged lifecycle;
+- an exact unsupported-option result selects the retained legacy workflow and announces its reduced review/resume guarantees;
+- any real failure from a CLI that recognizes staged archive remains authoritative and never falls back to agent-owned formal writes or movement.
 
-Manifest, validation-record, commit-marker, completed-receipt, and response versions evolve independently.
+### D14: Separate the state engine from command presentation
+
+The implementation is split into narrow modules for plan/capsule storage and schema validation, pure state derivation, candidate and payload validation, target classification, atomic replacement, movement and tree manifests, resolve/repair execution, receipts/cleanup, and human/JSON presentation. The pure state engine accepts validated evidence and returns one derived state plus legal structured actions; it does not read or mutate the filesystem itself.
+
+Direct archive, staged archive, and bulk orchestration call the same storage, classification, replacement, movement, and recovery primitives. Existing direct output mapping stays at the adapter boundary. Failpoint tests target every durable publication boundary independently before the direct adapter is switched over, reducing the chance that staged implementation changes established direct behavior accidentally.
 
 ## Risks / Trade-offs
 
-- **Finalize stops after some reviewed spec writes** → Keep those writes, retain the immutable validation snapshot and commit marker, and resume by classifying targets as base/candidate/conflict.
-- **External work changes a target during an interrupted commit** → Never roll it back or overwrite it; fail with `archive_commit_conflict` and preserve the plan for manual repair.
-- **Two changes target the same main spec** → Serialize finalize with the root mutation lock and recheck base state after acquiring it; the later change prepares from the committed result or becomes stale/conflicted.
-- **Prepare is repeated for the same change** → Return the existing change-bound plan status; do not create a competing workspace.
-- **Standalone sync changes an included main spec** → Its formal commit uses the shared mutation lock; archive validate/finalize sees the changed base hash and requires a new prepare.
-- **A caller misses the success response** → Retain `completed.json` and return the same authoritative result on retry.
-- **Root-level serialization delays unrelated archives** → Accept the small throughput cost to remove multi-lock ordering and recovery complexity.
-- **Windows keeps the change directory open** → Return a retryable rename diagnostic; ask the user to release the handle and rerun finalize.
-- **Planning root spans filesystems** → Reject staged rename with an actionable `EXDEV` diagnostic; do not copy/remove automatically.
-- **Structural validation misses a semantic mistake** → Return the complete deterministic review and require explicit confirmation.
-- **Validation snapshots consume disk** → Keep only the current snapshot eligible, clean superseded snapshots explicitly, remove them on abort, and garbage-collect completed plans after the receipt-retention period.
-- **Prompt context or rules contain secrets** → Do not persist their text; retain only source hashes and reconstruct agent work only while those sources remain unchanged.
-- **Ignored workflow state is force-cleaned** → Document the recovery impact, expose committing plans through status, and never claim durability against external deletion.
-- **A stale lock survives a crashed process** → Use owner metadata and explicit repair/liveness logic; never steal solely by age.
-
-## Migration Plan
-
-1. Add staged options and versioned JSON diagnostics while keeping the no-stage interface stable.
-2. Add deterministic per-change plan publication, minimal candidate/current-validation storage, path validation, status, cleanup, and completed-receipt retention.
-3. Implement prepare/status/validate/abort with one active plan per change.
-4. Implement the owner-aware root mutation lock and make staged finalize, direct archive, and standalone sync formal commits participate in it.
-5. Implement idempotent target classification, base-hash conflict detection, atomic individual writes, rename-only movement, retryable failures, and commit-bound completion recovery.
-6. Add candidate mode and CLI-owned formal commit to sync, then migrate the single archive skill with old-CLI fallback.
-7. Migrate bulk archive to explicit selection and ordered per-change lifecycles.
-8. Regenerate skills/parity fixtures, update docs/completions, and run cross-platform tests.
-9. Roll back by removing the staged option and skill branches; direct archive remains available throughout.
+- **A process stops after some reviewed spec writes** → Target hashes identify pending and already-applied files, so finalize resumes forward.
+- **A formal spec changes unexpectedly during commit** → Preserve and snapshot it, report `conflicted`, prepare a recovery candidate from exact base/reviewed/current evidence, and require a new amendment review and approval before resuming.
+- **Two formal writers overlap** → This violates the single-writer contract. Documentation and generated skills prevent normal orchestration from doing so, and hash checks report observable drift when practical, but a simultaneous-preflight race is not serialized and can allow a later write to replace earlier reviewed content.
+- **A future finalize lock is proposed** → It must coordinate direct and staged archive, standalone sync, bulk, and every other cooperative formal-spec writer. Session shutdown, ownership, recovery, and re-entry cannot be made safe with a fixed timeout, and standalone agent-driven sync would need a long-lived lease or its own candidate-based short commit phase.
+- **Windows holds the change directory open** → Keep reviewed specs applied and return a retryable rename diagnostic.
+- **Staged movement crosses filesystems** → Detect an observable device mismatch before commit and still reject `EXDEV` explicitly; direct archive retains verified temporary-copy compatibility.
+- **The bound destination appears after commit starts** → Preserve the active change and applied specs; normal finalize keeps the original binding, while an evidence-bound repair may rebind only to a user-supplied empty basename and records both paths.
+- **A plan record or commit marker is damaged** → Report `broken` or `orphaned`, reconstruct only from one consistent capsule lineage, or expose evidence-bound repair actions whose preconditions and approval token are rechecked immediately before mutation.
+- **A completed receipt collides with a later same-name change** → Separate immutable plan identity and retained receipt history from the reusable active name slot, warn about the default destination during prepare, and allow an explicit validated archive basename.
+- **Direct copy sees source drift or unsupported links** → Refuse publication or source removal, preserve both sides when necessary, and return the recorded tree evidence to the agent.
+- **The success response is missed** → Return the retained receipt or recover it from the commit-token marker carried into the archive.
+- **A complete review is too large for inline output** → Persist it and return a hash-bound file action.
+- **A user approves only a summary of a file-delivered review** → Require acknowledgement of the complete durable review and use an opaque approval token bound to its validation ID, path, hash, length, delivery mode, and payload manifest.
+- **A non-spec payload file changes after validation** → Invalidate the review before commit or report source conflict after commit; never present a spec-only diff as approval of an unbounded directory move.
+- **The primary plan is removed during commit** → Reconstruct it only from the complete matching source-local capsule. If every generated copy is force-cleaned, preserve observable formal state and report that exact automatic recovery is no longer possible.
+- **The state and compatibility surface becomes too complex** → Keep state derivation pure, isolate durable primitives from presentation, switch the direct adapter last, and exercise every publication boundary with failpoints and legacy-output fixtures.
+- **Serial bulk is slower than parallel candidate preparation** → Prefer predictable bases, reviews, and failure reporting over throughput for a low-frequency command.
+- **Structural validation misses a semantic mistake** → Preserve the complete diff and require explicit user confirmation.

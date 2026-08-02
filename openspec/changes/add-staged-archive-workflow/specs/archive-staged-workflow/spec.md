@@ -1,415 +1,552 @@
-## Purpose
-
-Define a reviewable archive workflow that keeps semantic spec reconciliation agent-driven while OpenSpec owns exact reviewed snapshots, freshness checks, serialized formal writes, resumable progress, and the final change move.
-
 ## ADDED Requirements
 
 ### Requirement: Prepared archive lifecycle
 
-The system SHALL support a durable archive plan that separates candidate editing and review from formal main-spec writes and change movement.
+The system SHALL prepare one reviewable archive plan for a change without modifying formal specs or moving the active change.
 
-#### Scenario: Prepare creates a reviewable plan
+#### Scenario: Prepare creates candidate work
 
-- **WHEN** a user prepares an archive for an active change
-- **THEN** the system SHALL create the change's single active plan under `openspec/.archive-plan/`
-- **AND** return its state, readiness findings, selected delta inputs, candidate paths, and archive destination
-- **AND** leave main specs and the active change location unchanged
+- **WHEN** a user prepares a change with selected delta specs
+- **THEN** the system SHALL record the complete discovered delta capability set and selected delta hashes
+- **AND** persist the exact bytes of every existing included main-spec base, or record typed absence for a new capability
+- **AND** create one plan-owned candidate for every included capability
+- **AND** return readiness warnings, the complete included/excluded partition, candidate-only agent work, and structured next actions
+- **AND** leave formal specs and the active change unchanged
 
-#### Scenario: Prepare selects all discovered specs
+#### Scenario: Prepare creates move-only work
 
-- **WHEN** prepare is invoked without `--include-spec` or `--skip-specs`
-- **THEN** the system SHALL include every concrete specs output discovered for that change
+- **WHEN** the selected schema has no concrete specs output or the user prepares with `--skip-specs`
+- **THEN** the system SHALL create a move-only plan with no candidates
+- **AND** return the discovered excluded capabilities and structured validate, status, and abort actions
 
-#### Scenario: Prepare selects a capability subset
+#### Scenario: Prepare selects a subset
 
-- **WHEN** prepare is invoked with repeated `--include-spec <capability>` values
-- **THEN** the system SHALL create candidates for exactly those discovered capabilities
-- **AND** record every other discovered delta as excluded
-- **AND** excluded deltas SHALL NOT gain main-spec write authority
+- **WHEN** a user supplies valid included and excluded capability selections
+- **THEN** the system SHALL create candidates only for included capabilities
+- **AND** report the complete resulting partition
+- **AND** preserve excluded deltas without reading or writing their target specs
 
-#### Scenario: Prepare excludes selected capabilities
+#### Scenario: Prepare receives an invalid selection
 
-- **WHEN** prepare is invoked with repeated `--exclude-spec <capability>` values
-- **THEN** the system SHALL include every discovered capability except those named
-- **AND** SHALL report the resulting complete included and excluded sets
+- **WHEN** a selection contains an unknown capability, duplicate value, overlapping include/exclude value, or an incomplete explicit partition
+- **THEN** the system SHALL fail with an actionable selection diagnostic
+- **AND** SHALL NOT publish a plan or modify formal state
 
-#### Scenario: Include and exclude selections conflict
+#### Scenario: Prepare receives an explicit archive name
 
-- **WHEN** a capability is duplicated, unknown, or appears in both include and exclude selections
-- **THEN** prepare SHALL fail before publishing a plan
-- **AND** SHALL report the invalid capability selection
+- **WHEN** a user supplies one safe archive basename during prepare
+- **THEN** the system SHALL record it as the intended destination name
+- **AND** report any currently observable destination collision or cross-device condition before candidate work
+- **AND** SHALL reject path separators, traversal, platform aliases, reserved generated names, and names that resolve outside the selected archive root
 
-#### Scenario: Prepare skips all specs
+#### Scenario: Prepare observes a default-name collision
 
-- **WHEN** prepare is invoked with `--skip-specs`
-- **THEN** the system SHALL record a no-spec selection and create no candidates
-- **AND** the change SHALL remain eligible for validation and finalization
+- **WHEN** the default local-date destination currently exists for a newly prepared same-name change
+- **THEN** prepare SHALL report the collision and the structured abort-and-prepare action for choosing an explicit archive name
+- **AND** SHALL NOT silently add a suffix or overwrite the existing archive
 
-#### Scenario: Plan survives process boundaries
+#### Scenario: Prepare is repeated
 
-- **WHEN** prepare completes and the invoking process exits
-- **THEN** a later process SHALL be able to inspect, validate, finalize, or abort the plan using its change name
-- **AND** the plan SHALL remain bound to its prepared planning root and canonical change identity
+- **WHEN** a plan already exists for the selected change
+- **THEN** the system SHALL return the existing plan status and legal next actions
+- **AND** SHALL NOT create a competing plan
 
-#### Scenario: Schema has no specs artifact
+#### Scenario: A completed change name is reused
 
-- **WHEN** the selected schema exposes no concrete `specs` artifact outputs
-- **THEN** prepare SHALL create a move-only plan
-- **AND** SHALL NOT infer delta specs from unrelated artifacts
+- **WHEN** a new active change uses the same name as a previously completed staged archive
+- **THEN** prepare SHALL assign a new immutable random plan identifier
+- **AND** SHALL NOT treat the retained completion receipt as an active plan
+- **AND** SHALL preserve the older receipt as history until its retention expires
 
-### Requirement: Single discoverable plan per change
+### Requirement: Candidate reconciliation boundary
 
-The system SHALL keep at most one staged archive plan for a change and expose its recoverable state by change name.
-
-#### Scenario: Two sessions prepare the same change
-
-- **WHEN** a second session prepares a change that already has prepared, validated, committing, or completed state
-- **THEN** the system SHALL NOT create another candidate workspace
-- **AND** SHALL return the existing state and a structured status action
-- **AND** neither session SHALL hold a mutation lock while performing candidate work or review
-
-#### Scenario: Inspect current plan state
-
-- **WHEN** a user requests staged status for a change
-- **THEN** the system SHALL report `none`, `prepared`, `validated`, `committing`, or `completed`
-- **AND** SHALL report the current validation identity, already-applied targets, active/archive location, freshness diagnostics, and legal next actions when applicable
-- **AND** SHALL NOT require a retained plan identifier or internal manifest inspection
-
-#### Scenario: Inspect a committing conflict
-
-- **WHEN** status finds a committing plan with a target conflict
-- **THEN** it SHALL report the target, prepared-base, reviewed-candidate, and current hashes
-- **AND** SHALL provide explicit preserve-newer-work and resume guidance
-- **AND** SHALL NOT silently rebind the commit, discard external work, or claim that abort is available
-
-#### Scenario: Plan publication is interrupted
-
-- **WHEN** a process stops before the complete plan workspace is published at its deterministic change-bound path
-- **THEN** the incomplete workspace SHALL NOT be loadable as a prepared plan
-- **AND** a previously published state for another change SHALL remain unaffected
-
-### Requirement: Self-contained agent work package
-
-The system SHALL make the prepare response sufficient for candidate reconciliation without rediscovering archive inputs or machine-owned state.
-
-#### Scenario: Prepare returns candidate work
-
-- **WHEN** a plan contains spec candidates
-- **THEN** prepare SHALL return project context, ordered archive guidance, ordered specs rules, explicit work items, and parsed operation summaries
-- **AND** each work item SHALL identify its capability, delta, optional base, candidate, and eventual target
-- **AND** the response SHALL provide exact read scope and candidate-only write scope
-- **AND** the response SHALL provide structured validate and abort actions
-
-#### Scenario: Agent receives an exact write boundary
-
-- **WHEN** prepare returns candidate work
-- **THEN** only plan-owned candidate paths SHALL appear in the write scope
-- **AND** eventual main-spec targets SHALL be identified as non-writable until finalize
-
-#### Scenario: Prepare returns move-only work
-
-- **WHEN** spec reconciliation is skipped or the schema has no concrete specs outputs
-- **THEN** prepare SHALL return `agentWork` as `null`
-- **AND** SHALL still return structured validate and abort actions
-
-#### Scenario: Machine-owned state stays internal
-
-- **WHEN** prepare serializes agent work
-- **THEN** prepared hashes, root fingerprints, commit markers, validation snapshots, and completion receipts SHALL remain outside the agent work contract
-
-#### Scenario: Prompt inputs are not persisted as plan authority
-
-- **WHEN** prepare returns project context, archive guidance, or specs rules
-- **THEN** the durable plan SHALL retain only hashes for their source inputs rather than their text
-- **AND** status SHALL reconstruct candidate work only while those source hashes still match
-- **AND** SHALL require abort and re-prepare when the prompt inputs changed
-
-### Requirement: Candidate spec boundary
-
-The system SHALL isolate agent-authored reconciliation in plan-owned candidates until a reviewed snapshot is finalized.
+The system SHALL limit archive-driven semantic reconciliation to explicit plan-owned candidates.
 
 #### Scenario: Existing main spec receives a candidate
 
-- **WHEN** a delta targets an existing main spec
-- **THEN** prepare SHALL initialize the candidate from the exact main-spec bytes
-- **AND** the agent SHALL reconcile the delta into the candidate rather than the main spec
+- **WHEN** an included delta targets an existing main spec
+- **THEN** prepare SHALL persist the exact main-spec bytes as the plan-owned base
+- **AND** initialize the candidate from those exact bytes
+- **AND** archive-driven sync SHALL reconcile the delta into that candidate
 
 #### Scenario: New capability receives a candidate
 
-- **WHEN** a delta targets a capability without a main spec
-- **THEN** prepare SHALL provide a plan-owned canonical candidate skeleton
-- **AND** the candidate SHALL use the existing new-capability Purpose behavior
+- **WHEN** an included delta targets a capability without a main spec
+- **THEN** prepare SHALL initialize the candidate with the canonical Purpose-aware new-spec skeleton
+- **AND** archive-driven sync SHALL write the resulting main-spec content only to that candidate
 
-#### Scenario: Candidate paths are explicit
+#### Scenario: Agent work is self-contained
 
 - **WHEN** prepare returns candidate work
-- **THEN** every included delta SHALL have an explicit candidate and eventual target mapping
-- **AND** consumers SHALL NOT discover candidate authority through glob or pattern matching
+- **THEN** the work package SHALL contain the selected deltas, persisted bases or typed absence, candidates, operation summaries, guidance, rules, and explicit read/write scopes
+- **AND** consumers SHALL use those inputs without rediscovering delta or candidate authority
+- **AND** write only the returned candidate paths
 
-### Requirement: Immutable validation snapshot
+#### Scenario: Modified delta omits a base scenario
 
-The system SHALL preserve the exact candidate bytes and review associated with each validation identifier.
+- **WHEN** a normal prepared candidate's `MODIFIED` delta does not mention a scenario present in its base requirement
+- **THEN** candidate reconciliation SHALL preserve that scenario
+- **AND** SHALL treat only whole-requirement `REMOVED` as removal authority in this workflow
+
+### Requirement: Immutable validation review
+
+The system SHALL bind every finalize action to one complete immutable review of exact candidate bytes.
 
 #### Scenario: Candidate validation succeeds
 
-- **WHEN** a user validates a prepared candidate
-- **THEN** the system SHALL verify parsing, canonical main-spec structure, safe paths, and source/base freshness
-- **AND** SHALL verify required structural outcomes for every selected delta operation
-- **AND** SHALL preserve unaffected requirements and scenarios
-- **AND** SHALL copy the exact reviewed candidate bytes into an immutable validation snapshot
-- **AND** SHALL return a complete deterministic diff, statistics, and an opaque validation identifier
-- **AND** SHALL leave main specs and the active change unchanged
+- **WHEN** all candidate files parse as canonical main specs and satisfy their selected delta outcomes
+- **THEN** validation SHALL rediscover the complete delta capability set and current artifact/task readiness
+- **AND** verify recorded source, base, prompt-source, and selection freshness
+- **AND** preserve unaffected requirements and every base scenario not covered by whole-requirement removal
+- **AND** enforce shared requirement/scenario identity and multiplicity rules
+- **AND** verify `ADDED`, partial `MODIFIED`, `RENAMED` before `MODIFIED`, and whole-requirement `REMOVED` outcomes without unrelated semantic additions, removals, or renames
+- **AND** preserve the existing Purpose content for existing capabilities
+- **AND** store the exact candidate bytes in an immutable validation snapshot
+- **AND** store a complete deterministic formal-spec diff plus an exact archive payload path/hash manifest with their hashes, byte length, and per-file statistics
+- **AND** issue an opaque current validation identifier
+- **AND** issue an opaque approval token bound to the validation identifier, complete review delivery metadata, payload-manifest hash, selection, and readiness
+- **AND** leave formal specs and the active change unchanged
+
+#### Scenario: Candidate validation fails
+
+- **WHEN** a candidate is malformed, contains delta-operation headings, misses a required delta outcome, or loses protected base content
+- **THEN** validation SHALL report capability-specific errors
+- **AND** SHALL NOT issue a validation identifier or modify formal state
+
+#### Scenario: Prepared delta discovery drifts
+
+- **WHEN** validation or finalization rediscovers a delta capability that was added, removed, or renamed after prepare
+- **THEN** the system SHALL report the prepared capability partition as stale
+- **AND** SHALL NOT validate or begin commit from that plan
+- **AND** return an abort-and-prepare action while the plan is still uncommitted
+
+#### Scenario: Source authority drifts after commit starts
+
+- **WHEN** a finalize retry finds the complete delta set, selected delta bytes, or another recorded source-authority input changed after commit state exists
+- **THEN** finalize SHALL report `archive_source_conflict`
+- **AND** snapshot safe current evidence and preserve the active change, applied specs, and recovery records
+- **AND** return agent-investigation guidance instead of abort-and-prepare
+- **AND** SHALL NOT continue formal writes or move a change whose current deltas no longer explain the reviewed result
+
+#### Scenario: Readiness changes after prepare
+
+- **WHEN** validation recalculates artifact or task readiness after prepare without changing selected spec bytes
+- **THEN** the immutable validation SHALL record the freshly calculated readiness and warnings
+- **AND** finalization SHALL recalculate readiness before commit and reject any difference with a validate action
+- **AND** the completion receipt SHALL record the readiness accepted at commit start
+
+#### Scenario: Archive payload changes after validation
+
+- **WHEN** a non-generated file, empty directory, mode, or symlink target under the active change differs from the current validation payload manifest
+- **THEN** finalization before commit SHALL report `archive_payload_changed` and return the validate action
+- **AND** finalization after commit SHALL report `archive_source_conflict` with safe current evidence
+- **AND** SHALL NOT move an unreviewed payload tree
+
+#### Scenario: Validation is repeated
+
+- **WHEN** a prepared plan is validated again before commit starts
+- **THEN** the new immutable snapshot SHALL become the current validation
+- **AND** the prior identifier SHALL remain diagnostic history but SHALL NOT be eligible for finalize
+
+#### Scenario: Candidate changes after validation
+
+- **WHEN** candidate bytes no longer match the current immutable validation snapshot
+- **THEN** finalize SHALL reject that validation as stale
+- **AND** return the legal validate action for creating a new immutable review
+
+#### Scenario: Complete review fits inline delivery
+
+- **WHEN** the complete review is within the documented inline byte limit
+- **THEN** validation SHALL return the complete review inline
+- **AND** also return its durable path, hash, byte length, payload-manifest hash, and approval token
+
+#### Scenario: Complete review requires file delivery
+
+- **WHEN** the complete review exceeds the documented inline byte limit
+- **THEN** validation SHALL return `delivery: file`, its complete path, hash, byte length, payload-manifest hash, statistics, approval token, and a structured read action
+- **AND** SHALL NOT label a summary or truncated excerpt as the complete review
+
+#### Scenario: File-delivered review is approved
+
+- **WHEN** a consumer requests finalization for a review delivered by file
+- **THEN** the consumer SHALL explicitly acknowledge the complete file path, hash, and byte length returned by validation
+- **AND** finalize SHALL require the opaque approval token bound to those exact values and the payload-manifest hash
+- **AND** a summary, excerpt, or statistics-only acknowledgement SHALL NOT count as approval of the immutable review
+
+#### Scenario: Complete review cannot be created
+
+- **WHEN** the complete review cannot be fully generated, persisted, or hashed
+- **THEN** validation SHALL fail closed with `archive_review_generation_failed`
+- **AND** SHALL NOT issue a validation identifier
 
 #### Scenario: Move-only validation succeeds
 
-- **WHEN** a plan contains no candidates
-- **THEN** validation SHALL create an immutable validation record with an empty review-file list
-- **AND** SHALL bind it to the reviewed warnings, selection, archive destination, and change inventory
+- **WHEN** a prepared plan contains no candidates
+- **THEN** validation SHALL create an immutable empty-spec diff plus a complete archive payload manifest bound to the readiness warnings and selected archive scope
+- **AND** explicitly list discovered capabilities that will remain unsynced
+- **AND** issue a current validation identifier and approval token
 
-#### Scenario: Required delta outcome is missing
+### Requirement: Single-writer forward-only finalization
 
-- **WHEN** an added requirement is absent, a removed requirement remains, a rename is incomplete, or a modified requirement/scenario is absent
-- **THEN** validation SHALL fail with an actionable capability-specific diagnostic
-- **AND** SHALL NOT issue a validation identifier for that candidate snapshot
+The system SHALL finalize a reviewed archive through resumable forward progress rather than rollback, under the documented single-writer usage contract.
 
-#### Scenario: Existing unaffected content is lost
+#### Scenario: Finalize starts a reviewed commit
 
-- **WHEN** a candidate drops an existing requirement or scenario not named for removal or replacement
-- **THEN** validation SHALL fail before any main-spec write
+- **WHEN** a user confirms the current validation identifier
+- **AND** supplies the opaque approval token bound to its complete review delivery metadata and payload-manifest hash
+- **AND** the complete discovered delta set and selected partition remain current
+- **AND** every recorded source and target base remains current
+- **AND** the complete active-change payload matches the reviewed manifest
+- **AND** current artifact and task readiness has been recalculated and accepted
+- **AND** the archive destination is available
+- **THEN** finalize SHALL bind the local archive date, final destination, validation identifier, approval identity, reviewed and payload hashes, and commit token before writing formal specs
+- **AND** publish a complete matching source-local recovery capsule before the first formal-spec replacement
+- **AND** preserve an existing valid date prefix on the change name
 
-#### Scenario: Editable candidate changes after validation
+#### Scenario: Pending target is applied
 
-- **WHEN** an editable candidate changes after a successful validation
-- **THEN** the previous validation identifier SHALL continue to identify only its immutable reviewed bytes
-- **AND** validating the new candidate SHALL issue a separate identifier and snapshot
-- **AND** SHALL make the previous identifier ineligible for finalize
+- **WHEN** an included target still equals its prepared base hash or prepared absence
+- **THEN** finalize SHALL atomically replace that target with the exact immutable reviewed bytes
+- **AND** verify the resulting target hash
 
-#### Scenario: Validation is superseded
+#### Scenario: Individual target replacement is interrupted
 
-- **WHEN** the same plan is validated again
-- **THEN** the new immutable snapshot SHALL become the plan's current validation
-- **AND** finalize SHALL accept only that current validation identifier
-- **AND** superseded snapshots SHALL be eligible for explicit generated-state cleanup
+- **WHEN** finalize writes a reviewed target
+- **THEN** it SHALL create an exclusive owned temporary sibling in the target directory
+- **AND** write and sync the exact reviewed bytes before using the platform replacement primitive
+- **AND** sync the parent directory where the platform supports it, verify the published hash, preserve the intended file mode, and clean up only its owned temporary path
+- **AND** use a bounded retry for documented transient Windows sharing failures
+- **AND** SHALL promise process-interruption recovery but SHALL NOT claim hardware power-loss durability or a multi-file atomic transaction
 
-### Requirement: Serialized forward-only finalization
+#### Scenario: Reviewed target is already applied
 
-The system SHALL serialize formal archive mutation per planning root and make an interrupted commit safe to resume without rolling back reviewed spec writes.
-
-#### Scenario: Finalize a reviewed plan
-
-- **WHEN** the user confirms finalization with a validation identifier
-- **AND** that identifier is the plan's current validation
-- **AND** source, base, target, and archive freshness checks pass after acquiring the root mutation lock
-- **THEN** the system SHALL write the exact immutable validation snapshot to included main-spec targets
-- **AND** SHALL rename the active change to its prepared archive destination
-- **AND** SHALL write and return an authoritative completion receipt
-
-#### Scenario: Target is still at its prepared base
-
-- **WHEN** finalize examines an included target whose current state equals the prepared base hash or prepared absence
-- **THEN** finalize SHALL atomically write the reviewed candidate snapshot
-
-#### Scenario: Target already equals the reviewed candidate
-
-- **WHEN** finalize or a retry examines an included target already equal to the reviewed candidate hash
-- **THEN** finalize SHALL treat that target as completed
+- **WHEN** an included target already equals the reviewed candidate hash
+- **THEN** finalize SHALL treat it as completed
 - **AND** SHALL NOT rewrite or roll it back
 
-#### Scenario: Target contains unrelated newer work
+#### Scenario: Target is unexpected before commit
 
-- **WHEN** an included target equals neither its prepared base state nor the reviewed candidate
-- **THEN** finalize SHALL stop with a commit-conflict diagnostic
-- **AND** SHALL NOT overwrite or roll back that target
+- **WHEN** preflight finds an included target equal to neither its prepared base nor reviewed candidate before commit state exists
+- **THEN** finalize SHALL report the plan as stale
+- **AND** leave the plan abortable
+- **AND** direct the user to abort and prepare again
 
-#### Scenario: Standalone sync changes an included main spec
+#### Scenario: Target is unexpected after commit starts
 
-- **WHEN** standalone sync commits a different version of an included main spec after archive prepare
-- **THEN** archive validation or finalization SHALL report the prepared base as stale or conflicted
-- **AND** SHALL NOT archive the change from that stale plan
-- **AND** SHALL direct the user to abort and prepare again from the new main-spec state
+- **WHEN** a retry finds an included target equal to neither its prepared base nor reviewed candidate after commit state exists
+- **THEN** finalize SHALL preserve the unexpected content and snapshot its exact bytes as plan-owned conflict evidence
+- **AND** report the plan as conflicted with the current, base, and reviewed paths and hashes
+- **AND** return a read-scoped `agentRecovery` evidence package containing the selected delta, relevant plan metadata, explicit safe scopes, and those three evidence versions
+- **AND** the archive agent SHALL diagnose the semantic difference and present recovery options to the user
+- **AND** user approval SHALL be required before any content-changing recovery action
+- **AND** the CLI SHALL return an evidence-bound resolve action for creating a plan-owned recovery candidate
+- **AND** the CLI and agent SHALL NOT silently rebase, overwrite, roll back, invoke standalone sync during commit, or claim success
 
-#### Scenario: Initial target preflight finds a conflict
+#### Scenario: Process stops after some target writes
 
-- **WHEN** finalize finds a target conflict before any formal write has begun
-- **THEN** the system SHALL NOT create the commit marker
-- **AND** the user SHALL remain able to abort the uncommitted plan
+- **WHEN** finalization stops after one or more reviewed targets were written
+- **THEN** those writes SHALL remain applied
+- **AND** a later finalize with the commit-bound validation identifier SHALL classify and resume the remaining targets
 
-#### Scenario: Process stops after some spec writes
+#### Scenario: Finalization resumes on a later date
 
-- **WHEN** finalization stops after writing some reviewed main specs but before moving the change
-- **THEN** those reviewed writes SHALL remain applied
-- **AND** the plan SHALL retain its commit marker and immutable validation snapshot
-- **AND** a later finalize with the same validation identifier SHALL resume remaining work
+- **WHEN** an interrupted commit is retried on a later local calendar date
+- **THEN** it SHALL retain the archive date and destination recorded when commit began
 
-#### Scenario: Archive rename fails
+#### Scenario: Bound archive destination becomes occupied
 
-- **WHEN** every included target equals the reviewed snapshot but the change-directory rename fails
-- **THEN** the system SHALL leave the reviewed main specs applied
-- **AND** leave the change active
-- **AND** return an actionable retryable diagnostic and structured resume action
+- **WHEN** commit has started and the bound destination is later occupied by content without the matching commit-token marker
+- **THEN** finalize SHALL report `archive_destination_conflict`
+- **AND** preserve the bound date and destination, active source, applied specs, and recovery evidence
+- **AND** normal finalize SHALL NOT abort the commit, choose an alternate destination, overwrite the occupant, or move the source
+- **AND** return evidence and a structured repair action that can rebind only to an explicit user-supplied empty destination
+
+### Requirement: Reviewed conflict resolution
+
+The system SHALL resolve a post-commit formal-spec conflict through a new immutable amendment review without giving the agent direct formal-spec write authority.
+
+#### Scenario: Resolve prepares recovery candidate work
+
+- **WHEN** a conflicted plan receives its current evidence-bound resolve action
+- **THEN** the system SHALL create one plan-owned recovery candidate initialized from the captured current target
+- **AND** return the persisted original base, original reviewed snapshot, captured current target, selected delta, rules, and explicit recovery read/write scopes
+- **AND** SHALL NOT modify the formal target, other reviewed targets, or active change
+
+#### Scenario: Recovery candidate is validated
+
+- **WHEN** the recovery candidate remains based on the captured current hash and satisfies canonical main-spec structure plus the original delta outcomes
+- **THEN** validation SHALL create a complete immutable amendment review from captured current bytes to recovery candidate bytes
+- **AND** bind a new validation identifier and approval token to the original validation, conflict evidence, current hash, amendment bytes, and payload manifest
+- **AND** show every difference not authorized by the original delta for explicit user review
+
+#### Scenario: Approved recovery amendment is applied
+
+- **WHEN** recovery-mode finalize receives the current recovery ID, validation identifier, approval token, and explicit confirmation
+- **THEN** it SHALL append an immutable commit amendment
+- **AND** atomically apply the exact recovery snapshot to the conflicted target
+- **AND** resume the original forward-only commit
+- **AND** record the original review and amendment lineage in the completion receipt
+
+#### Scenario: Recovery evidence changes
+
+- **WHEN** the captured current target, payload manifest, source authority, or recovery candidate changes after recovery validation
+- **THEN** the system SHALL reject the recovery approval as stale
+- **AND** preserve the latest current bytes and require a new resolve or validate action as appropriate
+
+### Requirement: Archive movement and completion recovery
+
+The system SHALL move a fully applied staged change without publishing a partial archive and SHALL recover a missed completion response.
+
+#### Scenario: Same-filesystem staged rename succeeds
+
+- **WHEN** every included target equals the reviewed snapshot and the active change can be renamed within the selected planning home
+- **THEN** finalize SHALL exclusively create and sync a commit-token marker in the active source before movement
+- **AND** bind the marker to the plan, commit, validation lineage, payload manifest, source-local capsule, source, and destination
+- **AND** carry that marker and recovery capsule into the final archive destination
+- **AND** write an authoritative completion receipt
+- **AND** remove the generated marker and capsule after the receipt is durable
+- **AND** report the final archive location and applied specs
+
+#### Scenario: Process stops after marker creation
+
+- **WHEN** a matching commit-token marker exists in the active source and movement has not happened
+- **THEN** a retry SHALL verify its plan identifier, token, source, and destination binding
+- **AND** resume the same movement without repeating completed spec writes
+
+#### Scenario: Movement marker is missing or inconsistent
+
+- **WHEN** movement evidence contains a pre-existing marker, malformed marker, mismatched token, or source/destination combination inconsistent with commit state
+- **THEN** status SHALL report the plan as `orphaned`
+- **AND** preserve all source, destination, plan, and marker evidence
+- **AND** return an opaque recovery identifier and only the repair decisions whose preconditions are provable
+- **AND** SHALL NOT guess ownership
+
+#### Scenario: Staged rename is temporarily blocked
+
+- **WHEN** Windows or another platform temporarily prevents the directory rename
+- **THEN** finalize SHALL leave reviewed spec writes applied and the active change in place
+- **AND** return a retryable diagnostic and structured resume action
 - **AND** SHALL NOT report the archive as complete
 
-#### Scenario: Process stops after archive rename
+#### Scenario: Staged rename crosses filesystems
 
-- **WHEN** the active source is absent and the prepared archive destination matches the prepared change inventory
-- **AND** every included target matches the reviewed snapshot
-- **THEN** a retry SHALL write the completion receipt and report the archive as completed
+- **WHEN** staged movement reports a cross-device condition
+- **THEN** finalize SHALL return `archive_cross_device_unsupported`
+- **AND** SHALL NOT copy, remove, or publish a partial final archive
 
-#### Scenario: Caller retries a completed plan
+#### Scenario: Process stops after directory movement
 
-- **WHEN** finalize receives a plan with a matching retained completion receipt
-- **THEN** it SHALL return the same authoritative archive result without repeating formal writes
+- **WHEN** the active source is absent and the commit-bound destination contains the matching commit token
+- **THEN** a retry SHALL recognize the completed movement
+- **AND** write and return the completion receipt without repeating spec writes or movement
 
-### Requirement: Commit-time abort boundary
+#### Scenario: Marker cleanup fails after receipt durability
 
-The system SHALL allow a plan to be discarded before formal writes begin and SHALL require forward recovery after they begin.
+- **WHEN** the authoritative completion receipt is durable but removal of the matching generated marker or source-local capsule fails
+- **THEN** finalize SHALL still report completion from the receipt
+- **AND** report the matching generated path as cleanup residue
+- **AND** cleanup MAY later remove only that receipt-bound residue
 
-#### Scenario: Abort an uncommitted plan
+#### Scenario: Completed finalize is retried
 
-- **WHEN** a user aborts a plan without a commit marker
-- **THEN** the system SHALL remove its candidates and validation snapshots
-- **AND** SHALL leave main specs and the active change unchanged
+- **WHEN** a matching completion receipt already exists
+- **THEN** finalize SHALL return the same authoritative result
+- **AND** SHALL NOT repeat formal mutation
+- **AND** the completed plan SHALL remain outside the reusable active change slot
 
-#### Scenario: Abort after commit starts
+### Requirement: Evidence-bound orphan and broken repair
 
-- **WHEN** a user attempts to abort a plan with a commit marker
-- **THEN** the system SHALL reject abort
-- **AND** direct the user to resume finalize or repair an explicitly reported conflict
-- **AND** SHALL NOT roll back reviewed main-spec writes
+The system SHALL preserve ambiguous recovery evidence and perform only explicitly approved repair actions whose complete preconditions remain provable.
 
-#### Scenario: Abort a completed plan
+#### Scenario: Repair decision is previewed
 
-- **WHEN** abort receives a completed plan
-- **THEN** it SHALL report the retained completion result
-- **AND** SHALL NOT describe the committed archive as aborted
+- **WHEN** a caller selects one currently allowed repair decision and supplies every required explicit input without an approval token
+- **THEN** repair SHALL remain non-mutating
+- **AND** persist a complete repair review containing the evidence manifest, decision, effects, retained evidence, cleanup consequences, and explicit inputs
+- **AND** return an approval token and exact execution action bound to that repair review
 
-### Requirement: Explicit durable-state cleanup
+#### Scenario: Primary plan is reconstructed
 
-The system SHALL retain recovery-critical state and remove generated state only through bounded explicit rules.
+- **WHEN** the primary active-plan record is missing or damaged
+- **AND** one complete source-local capsule matches the source or destination, validation lineage, commit, payload, and formal targets
+- **THEN** repair SHALL atomically reconstruct the primary plan from that capsule
+- **AND** return the derived status without changing formal specs or movement state
 
-#### Scenario: Cleanup encounters completed and superseded state
+#### Scenario: Source is verified for resume
 
-- **WHEN** root-level cleanup finds an expired completed receipt, superseded validation snapshot, or abandoned generated publication temporary
-- **THEN** it SHALL remove only entries identified through the generated-state model
-- **AND** SHALL report what it removed
+- **WHEN** the active source and payload match the commit, the destination is absent, and the marker alone is missing or foreign
+- **THEN** an approved `resume-source` repair SHALL preserve any foreign marker as evidence
+- **AND** publish the commit-bound marker and return the normal finalize resume action
+
+#### Scenario: Destination is verified for adoption
+
+- **WHEN** the active source is absent and the bound destination exactly matches the reviewed payload, capsule, commit, and target evidence
+- **THEN** an approved `adopt-destination` repair SHALL write the authoritative completion receipt
+- **AND** perform only receipt-bound generated cleanup
+
+#### Scenario: Matching source and destination both exist
+
+- **WHEN** the active source and bound destination both contain the same reviewed payload lineage
+- **THEN** an approved `quarantine-source-and-adopt-destination` repair SHALL atomically move the duplicate source to a plan-owned quarantine
+- **AND** write the destination receipt
+- **AND** retain the quarantined copy until its receipt-bound cleanup retention expires
+- **AND** SHALL NOT delete the duplicate during repair
+
+#### Scenario: Bound destination contains foreign content
+
+- **WHEN** the active source exactly matches the reviewed lineage and the bound destination is occupied by different content
+- **THEN** an approved `rebind-destination` repair SHALL require a user-supplied safe basename whose destination is absent
+- **AND** append the old and new destination bindings to immutable repair history
+- **AND** return the normal finalize resume action
+- **AND** SHALL NOT modify the foreign destination
+
+#### Scenario: Repair evidence is insufficient or stale
+
+- **WHEN** no repair preconditions can be proven or any bound evidence changes after status
+- **THEN** repair SHALL preserve every source, destination, plan, capsule, marker, receipt, and formal target
+- **AND** return `preserve-and-stop` with a durable recovery report or a fresh status action
+- **AND** SHALL NOT combine disagreeing lineages, adopt similar content, or use confirmation as a substitute for missing evidence
+
+#### Scenario: Every recovery copy is missing
+
+- **WHEN** commit may have started but neither a complete primary plan nor a complete matching capsule remains
+- **THEN** status SHALL report that exact automatic resume cannot be proven
+- **AND** preserve all observable formal and archive state for external recovery
+- **AND** SHALL NOT reconstruct reviewed bytes from summaries, hashes, or current targets
+
+### Requirement: Staged status and lifecycle cleanup
+
+The system SHALL expose recovery state by change name and preserve commit evidence until completion.
+
+#### Scenario: Status reports current state
+
+- **WHEN** a user requests staged status
+- **THEN** the system SHALL report `none`, `prepared`, `validated`, `committing`, `conflicted`, `broken`, `orphaned`, or `completed`
+- **AND** include the immutable plan identifier, current validation and approval binding when applicable, review delivery, payload-manifest hash, included/excluded capabilities, applied and pending targets, locations, diagnostics, evidence paths, and structured legal next actions
+
+#### Scenario: Active change name has only historical receipts
+
+- **WHEN** an active change exists with no active plan and retained receipts use the same change name but different plan identities
+- **THEN** status SHALL report `none` for the active change
+- **AND** expose older receipts only as history
+- **AND** prepare SHALL remain a legal next action
+
+#### Scenario: Stored plan state is malformed or incomplete
+
+- **WHEN** a plan, pointer, commit record, or receipt exists but fails schema, hash, containment, identity, or cross-record consistency checks
+- **THEN** status SHALL report `broken`
+- **AND** preserve the suspect files and return their safe evidence paths for agent-led diagnosis
+- **AND** return `reconstruct-plan` only when one complete matching source-local capsule proves the lineage
+- **AND** otherwise SHALL NOT infer progress or mutate formal state
+
+#### Scenario: Movement evidence has no consistent owner
+
+- **WHEN** source, destination, marker, and receipt evidence cannot be reconciled to one plan and commit token
+- **THEN** status SHALL report `orphaned`
+- **AND** preserve all evidence and return a recovery identifier plus evidence-bound agent-investigation and repair actions
+- **AND** SHALL NOT move, delete, or overwrite either location
+
+#### Scenario: Abort removes an uncommitted plan
+
+- **WHEN** a user aborts a prepared or validated plan without commit state
+- **THEN** the system SHALL remove its generated candidates and validation snapshots
+- **AND** leave formal specs and the active change unchanged
+
+#### Scenario: Abort follows commit start
+
+- **WHEN** a user requests abort after commit state exists
+- **THEN** the system SHALL preserve recovery evidence
+- **AND** reject abort with resume or agent-investigation guidance
+
+#### Scenario: Cleanup removes disposable state
+
+- **WHEN** root-level cleanup encounters recognized superseded validations, abandoned generated temporaries, receipt-bound marker or capsule residue, quarantined duplicate sources past their receipt-bound retention, or completed receipts older than 30 days
+- **THEN** it SHALL remove only those explicitly owned paths
+- **AND** report what was removed
 
 #### Scenario: Cleanup encounters active recovery state
 
-- **WHEN** cleanup finds a prepared, validated, or committing plan
-- **THEN** it SHALL preserve that plan
-- **AND** SHALL report its change and current state
+- **WHEN** cleanup encounters a prepared, validated, committing, conflicted, broken, or orphaned plan
+- **THEN** it SHALL report and preserve that plan
 
-### Requirement: Root-level formal mutation coordination
+### Requirement: Single-writer usage contract
 
-The system SHALL use one owner-aware mutation lock per planning root for OpenSpec-owned formal main-spec writes and archive movement.
+The system SHALL describe staged archive as requiring single-writer use and SHALL NOT claim that finalize or the planning root is protected by a writer lock.
 
-#### Scenario: Another archive commit is running
+#### Scenario: Normal staged operation
 
-- **WHEN** staged finalize, direct archive, or standalone sync formal commit attempts mutation while the root mutation lock is held
-- **THEN** the later operation SHALL wait within its documented bound or return an actionable busy diagnostic
-- **AND** SHALL recheck freshness after acquiring the lock
+- **WHEN** a staged archive lifecycle is active
+- **THEN** generated skills SHALL wait for each command to finish before starting the next
+- **AND** SHALL instruct the user not to run another archive, standalone sync, or manual formal-spec edit until finalization finishes or the uncommitted plan is aborted
 
-#### Scenario: Unrelated changes finalize
+#### Scenario: No locking guarantee
 
-- **WHEN** two changes have plans that target unrelated specs under the same planning root
-- **THEN** their prepare, candidate work, and validation MAY proceed independently
-- **AND** their formal finalization SHALL run serially
+- **WHEN** staged archive explains its concurrency boundary
+- **THEN** it SHALL state that this workflow does not provide a finalize, process, lease, session-owned, time-based, or planning-root writer lock
+- **AND** SHALL describe concurrent archive, standalone sync, and manual formal-spec writes as unsupported
+- **AND** SHALL describe hash drift checks as detection rather than mutual exclusion
+- **AND** SHALL NOT claim that every simultaneous-preflight or last-writer race is prevented
 
-#### Scenario: Standalone sync commits candidate work
+#### Scenario: Unexpected external change is detected
 
-- **WHEN** standalone sync finishes agent-driven reconciliation
-- **THEN** a CLI-owned formal commit SHALL acquire the root mutation lock
-- **AND** SHALL recheck every selected main-spec base hash before writing
-- **AND** SHALL atomically apply and verify all conflict-free candidate bytes
-- **AND** a base mismatch SHALL leave all selected main specs unchanged
+- **WHEN** a recorded source or target changes outside the supported single-writer workflow
+- **THEN** the system SHALL report stale or conflicted state according to whether commit has begun
+- **AND** SHALL NOT describe the workflow as an all-or-nothing transaction
 
-#### Scenario: Lock owner releases the lock
+### Requirement: Sequential bulk composition
 
-- **WHEN** a process releases the root mutation lock
-- **THEN** it SHALL remove the lock only when the stored owner token matches that process
-- **AND** SHALL NOT steal or remove another live owner's lock solely because of elapsed time
+The system SHALL compose bulk archive from complete sequential single-change lifecycles.
 
-### Requirement: Rename-only staged movement
+#### Scenario: Bulk scope is established
 
-The staged workflow SHALL move changes only through a same-filesystem rename in this version.
+- **WHEN** a user selects multiple changes for bulk archive
+- **THEN** bulk SHALL determine a stable change order and explicit included/excluded capability partition for every change
+- **AND** present the scope before formal mutation
 
-#### Scenario: Same-filesystem rename succeeds
+#### Scenario: Bulk processes selected changes
 
-- **WHEN** the active change and prepared archive destination support rename
-- **THEN** finalize SHALL rename the complete change directory without a copy/remove fallback
+- **WHEN** the user proceeds with bulk archive
+- **THEN** bulk SHALL prepare, reconcile, validate, confirm the exact approval-bound review, and finalize each change before preparing the next change
+- **AND** the next change SHALL observe all completed formal specs from earlier changes
 
-#### Scenario: Windows rename is temporarily blocked
+#### Scenario: Bulk selection drifts
 
-- **WHEN** Windows reports a sharing or permission condition that prevents rename
-- **THEN** finalize SHALL return a retryable diagnostic explaining that open handles may need to be released
-- **AND** SHALL keep the active change and resumable plan
+- **WHEN** prepare returns a capability partition different from the inspected partition
+- **THEN** bulk SHALL abort that uncommitted plan
+- **AND** report selection drift without continuing that item
 
-#### Scenario: Cross-filesystem rename is requested
+#### Scenario: One bulk item fails or is cancelled
 
-- **WHEN** rename fails with a cross-device condition on Windows, macOS, or Linux
-- **THEN** staged finalize SHALL report that automatic cross-filesystem movement is unsupported
-- **AND** SHALL NOT create or publish a partial archive copy
+- **WHEN** a selected change fails, conflicts, or is cancelled
+- **THEN** completed earlier changes SHALL remain completed
+- **AND** bulk SHALL report the current item accurately
+- **AND** later changes SHALL remain unstarted or be explicitly reported as skipped
 
-### Requirement: Defensive path and inventory checks
+#### Scenario: Mixed-schema bulk item has no specs
 
-The system SHALL reject path aliases and filesystem drift that could redirect plan authority outside the selected root.
+- **WHEN** a selected change has no concrete specs output
+- **THEN** bulk SHALL use the same move-only validation and confirmation lifecycle
 
-#### Scenario: Caller supplies an invalid identifier
+### Requirement: Defensive cross-platform paths
 
-- **WHEN** a validation identifier is outside the exact generated UUID form
-- **THEN** the system SHALL reject it before resolving or reading a validation path
+The system SHALL keep every staged path and generated identifier within its selected planning root on Windows, macOS, and Linux.
+
+#### Scenario: Invalid identifier or stored path
+
+- **WHEN** a caller or stored plan supplies a malformed validation identifier, absolute authority entry, traversal, or containment escape
+- **THEN** the system SHALL reject it before reading or writing the resolved target
 
 #### Scenario: Windows path alias is unsafe
 
-- **WHEN** a Windows path uses a drive change, case alias, device name, alternate data stream, trailing dot/space, or slash variant that escapes or aliases a protected path
-- **THEN** the system SHALL reject the plan or operation before formal mutation
+- **WHEN** a Windows path uses a drive change, device name, alternate data stream, trailing-dot/space alias, or case-insensitive alias of a protected path
+- **THEN** the system SHALL reject the operation before formal mutation
 
 #### Scenario: POSIX path escapes through a symlink
 
-- **WHEN** a candidate, target, or plan path resolves outside its allowed root through a symlink
+- **WHEN** a candidate, target, source, or destination resolves outside its allowed root through a symlink
 - **THEN** the system SHALL reject the operation before formal mutation
 
-#### Scenario: Change tree changes after prepare
+#### Scenario: Recovery action supplies a path
 
-- **WHEN** a regular file, directory entry, or recorded symlink target in the active change differs from the prepared inventory
-- **THEN** validation/finalize SHALL report the plan as stale
-- **AND** SHALL require a newly prepared plan
-
-### Requirement: Bulk staged archive behavior
-
-The bulk archive workflow SHALL compose reviewed single-change commits without silently expanding prepared scope.
-
-#### Scenario: Batch scope is reviewed before mutation
-
-- **WHEN** multiple changes are selected
-- **THEN** bulk SHALL inspect every selected change and resolve capability order before preparing the first formal commit
-- **AND** no main spec or change location SHALL be modified during inspection
-
-#### Scenario: Bulk uses explicit capability selection
-
-- **WHEN** bulk prepares a change after inspecting its concrete specs outputs
-- **THEN** it SHALL pass every included capability explicitly with repeated `--include-spec`
-- **AND** when at least one capability is included, SHALL pass every explicitly excluded capability with repeated `--exclude-spec`
-- **AND** when no capability is included, SHALL use `--skip-specs` and expect every discovered capability in the returned excluded set
-- **AND** SHALL compare prepare's returned complete partition with the inspected partition before candidate work
-- **AND** a mismatch SHALL abort the uncommitted plan and report selection drift
-- **AND** a newly added delta SHALL NOT silently enter the previously reviewed batch scope
-
-#### Scenario: Overlapping changes are processed sequentially
-
-- **WHEN** selected changes update the same capability
-- **THEN** bulk SHALL complete prepare, candidate work, validate, confirm, and finalize for the earlier change
-- **AND** SHALL prepare the later change from the earlier committed main spec
-
-#### Scenario: One bulk commit fails
-
-- **WHEN** one change fails or becomes retryable during a batch
-- **THEN** already completed commits SHALL remain completed
-- **AND** dependent later changes SHALL be skipped
-- **AND** unrelated changes MAY continue
-
-#### Scenario: Mixed-schema batch
-
-- **WHEN** a batch contains changes with and without concrete specs outputs
-- **THEN** every change SHALL follow prepare, validate, confirm, and finalize
-- **AND** only changes with included concrete specs outputs SHALL receive candidate work
+- **WHEN** a repair request supplies an archive name, recovery identifier, or path-like value not present in its structured evidence-bound action
+- **THEN** the system SHALL reject it before resolving or mutating source, destination, quarantine, marker, capsule, or receipt state

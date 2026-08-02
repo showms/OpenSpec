@@ -1,77 +1,70 @@
-## 1. Staged CLI Contract
+## 1. Staged CLI Contract and State Model
 
-- [ ] 1.1 Add/register prepare/status/validate/finalize/abort and root-level cleanup stages plus repeatable include/exclude options in CLI help and completion metadata without changing no-stage option meanings
-- [ ] 1.2 Implement centralized validation for change-bound versus root-level stages, validation UUIDs, prepare-only include/exclude/skip selection, duplicate/unknown/overlap conflicts, `--no-validate`, current-validation identity, and JSON confirmation
-- [ ] 1.3 Define versioned prepare/status/validate/finalize/abort/cleanup/retry/completion JSON shapes, structured actions, and archive-specific diagnostics
-- [ ] 1.4 Add compatibility tests proving direct archive flags, prompts, output, and JSON meanings remain unchanged
-- [ ] 1.5 Add command tests for every valid stage and invalid option combination
+- [ ] 1.1 Add prepare/status/validate/finalize/resolve/repair/abort and root-level cleanup stages plus repeatable include/exclude, explicit archive-name, validation, approval, recovery, and repair-decision options to CLI parsing, help, and completion metadata without changing no-stage flag meanings
+- [ ] 1.2 Implement centralized validation for change-bound versus root-level stages, validation/recovery UUIDs, opaque approval tokens, non-mutating repair previews versus confirmed executions, prepare/rebind-only archive names, prepare-only selection, duplicate/unknown/overlap/partition errors, resolve/repair option combinations, staged `--no-validate`, and JSON confirmation
+- [ ] 1.3 Define versioned staged JSON shapes, immutable plan IDs, prepared/validated/committing/conflicted/broken/orphaned/completed states, exact review and payload acknowledgement, recovery IDs, evidence-bound resolve/repair packages, structured actions, single-writer-use notices, commit amendments, and completion receipts
+- [ ] 1.4 Add command tests for every valid stage, repair decision, invalid option combination, stale approval/recovery token, damaged-state response, file-review acknowledgement, and human/JSON confirmation path
+- [ ] 1.5 Document the single-writer workflow contract in CLI help and diagnostics, explicitly state that this change adds no finalize/process/lease/session/time-based/planning-root writer lock, and avoid claiming transaction or concurrent-writer guarantees
 
-## 2. Immutable Plan and Validation Storage
+## 2. Plan Storage and Prepare
 
-- [ ] 2.1 Add explicit constants/types for deterministic change keys, immutable minimal manifests, prompt-source hashes, candidates, current-validation pointers/snapshots, commit markers, receipts, and the root mutation lock
-- [ ] 2.2 Derive `.archive-plan` from the selected planning home, create its ignore file, and publish one complete active plan per change plus immutable validation snapshots through generated temporary siblings and atomic rename
-- [ ] 2.3 Validate every stored shape and resolve relative authority with canonical containment, nearest-existing-parent, symlink checks, and root/change identity binding
-- [ ] 2.4 Implement current-validation advancement, superseded-snapshot cleanup, completed-receipt retention, and root cleanup that never removes prepared/validated/committing plans
-- [ ] 2.5 Add storage tests for malformed state, incomplete publication, traversal/symlink escapes, repeated same-change prepare, current-validation replacement, receipt retry, force-cleaning diagnostics, and cleanup boundaries
-- [ ] 2.6 Add Windows storage/path tests for drive/case aliases, device names, alternate data streams, slash variants, and trailing-dot/space aliases
+- [ ] 2.1 Add explicit constants and validated types for safe change keys, archive basenames, random immutable plan IDs, payload manifests, exact base files/typed absence, normal/recovery candidates, immutable validations and approval tokens, conflict/orphan evidence, repair records, current-validation pointers, commit/amendment records, commit-token markers, source-local capsules, quarantine, completed plans, receipts, and owned temporary paths
+- [ ] 2.2 Derive `.archive-plan` from the selected planning home, create its ignore file, define the source-local capsule with an ignore-all file, and publish complete temporary plans/capsules with atomic rename without exposing recovery bytes to normal source-control discovery
+- [ ] 2.3 Validate every stored shape and resolve all authority through canonical containment, nearest-existing-parent, symlink, root-identity, and change-identity checks
+- [ ] 2.4 Extract shared readiness/task helpers and obtain delta specs only from concrete `artifactPaths.specs.existingOutputPaths`
+- [ ] 2.5 Implement all/include/exclude/explicit-partition/none selection with complete returned included/excluded scope and no excluded target reads
+- [ ] 2.6 Snapshot the complete discovered delta capability set and hashes, persist exact bytes for included bases or typed absence, and record prompt-source hashes, current warnings, mappings, archive-name policy, and exact scopes
+- [ ] 2.7 Create candidates from persisted base bytes or the shared Purpose-aware skeleton and return candidate-only `agentWork` or `null` for move-only plans
+- [ ] 2.8 Detect currently observable default/explicit destination collisions and device mismatch before candidate work, validate explicit archive basenames, rotate completed plans out of the reusable active change slot, retain immutable receipts for exactly 30 days, and allow a later same-name change to receive a new plan ID and explicit destination
+- [ ] 2.9 Add prepare/storage tests for repeated prepare, same-name reuse, incomplete publication, malformed/inconsistent state, store roots, nested capabilities, mixed schemas, source drift, exact base recovery, and no formal mutation
+- [ ] 2.10 Add Windows path tests for drive/case aliases, device names, alternate data streams, slash variants, trailing-dot/space aliases, and canonical capability/path collisions
+- [ ] 2.11 Add containment and best-effort TOCTOU tests for symlink swaps, nearest-existing-parent checks, and single-writer boundary diagnostics
+- [ ] 2.12 Split validated storage/capsule IO, pure state derivation, candidate/payload validation, target classification, atomic replacement, movement, resolve/repair, receipts/cleanup, and human/JSON presentation into narrow modules with direct/staged/bulk adapters over shared primitives
 
-## 3. Prepare Stage
+## 3. Immutable Validation and Review
 
-- [ ] 3.1 Extract shared readiness/task helpers, resolve deltas only from concrete specs outputs, and apply validated all/include/exclude/mixed/none selection
-- [ ] 3.2 Resolve the existing local-date/no-double-prefix archive destination and build a deterministic `lstat`-based change inventory without following symlinks
-- [ ] 3.3 Snapshot selected delta/base/target state, readiness warnings, prompt-source hashes, operation summaries, and exact scopes without persisting context/guidance/rule text
-- [ ] 3.4 Create included candidates from exact base bytes or the shared Purpose-aware skeleton and support move-only/mixed-schema plans
-- [ ] 3.5 Publish the change-bound immutable plan without locks/formal writes and return complete selection, `agentWork`, warnings, and structured status/validate/abort actions
-- [ ] 3.6 Add prepare contract tests for no formal mutation, exact scopes, no follow-up discovery, all/include/exclude/mixed/none selection, invalid overlap, and complete inventory
-- [ ] 3.7 Add prepare integration tests for selected stores, nested capabilities, Windows paths, repeated same-change prepare, prompt-source drift, and schemas without specs outputs
+- [ ] 3.1 Rediscover the complete delta capability set and current artifact/task readiness, build/recheck the complete `lstat` archive payload manifest excluding explicit recovery paths, then recheck plan identity, recorded deltas, persisted bases, prompt sources, selection, and candidate/target containment before validation and finalization
+- [ ] 3.2 Validate one stable candidate byte buffer for canonical main-spec structure, Purpose preservation, shared identity/multiplicity rules, `ADDED`, partial `MODIFIED`, `RENAMED` before `MODIFIED`, whole-requirement `REMOVED`, unaffected requirements, and preservation of omitted base scenarios
+- [ ] 3.3 Generate deterministic complete formal-spec diffs plus payload path/hash manifests with byte length, review/payload hashes, statistics, the documented inline limit, and file delivery for larger reviews
+- [ ] 3.4 Publish exact reviewed bytes and validation records through complete temporary directories and atomically advance the current-validation pointer
+- [ ] 3.5 Reject normal validation after commit starts, support recovery-mode amendment validation, invalidate superseded validation/approval actions and candidate or payload edits, require approval tokens bound to exact path/hash/length/delivery/payload metadata, and support move-only validation records that enumerate unsynced deltas
+- [ ] 3.6 Add validation tests for parsing/outcome/Purpose/identity/multiplicity/preservation failures, capability discovery/readiness/payload drift, stale inputs, candidate edits, superseded identifiers and approval tokens, recovery amendments, large-review acknowledgement, review-storage failure, move-only plans, and no formal mutation
 
-## 4. Validate Stage
+## 4. Forward-Only Finalization and Recovery
 
-- [ ] 4.1 Recheck plan integrity, prompt-source hashes when reconstructing agent work, complete change inventory, included delta/base/target/archive freshness, root identity, and path safety
-- [ ] 4.2 Validate stable candidate bytes for canonical main-spec structure, operation outcomes, and preservation of unaffected requirements/scenarios
-- [ ] 4.3 Produce complete deterministic unified diffs/statistics and base/candidate/review hashes
-- [ ] 4.4 Publish exact reviewed bytes plus an immutable validation record, atomically advance the current-validation pointer, invalidate prior finalize actions, and support move-only snapshots
-- [ ] 4.5 Return versioned review and structured status/finalize/abort actions without writing main specs or moving the change
-- [ ] 4.6 Add validate tests for parse/operation/preservation failures, stale inputs, changed main-spec base hashes, complete review output, candidate edits, superseded snapshots, and no formal mutation
+- [ ] 4.1 Implement pre-commit capability/readiness/source/payload freshness checks, approval-token verification, target base/candidate/conflict classification, explicit/default archive binding, destination/device preflight, and atomic commit-record publication
+- [ ] 4.2 Implement cross-platform atomic individual-file replacement through exclusive owned temporary siblings, exact write/file sync, platform replace, parent sync where supported, mode preservation, bounded Windows sharing retry, owned cleanup, and post-write hash verification; document that this is process-interruption recovery rather than power-loss or multi-file atomicity
+- [ ] 4.3 Resume interrupted spec application by writing base targets, skipping reviewed targets, and snapshotting unexpected targets into read-scoped base/reviewed/current `agentRecovery` evidence packages with opaque recovery IDs and structured resolve actions, without silent overwrite, rebase, rollback, direct formal writes, or standalone sync
+- [ ] 4.4 Publish a complete plan/commit/validation/payload-bound source-local recovery capsule before formal writes; exclusively write and sync its bound movement marker before rename; recover crash-before-move and crash-after-move; persist the completion receipt; and treat post-receipt marker/capsule removal failure as cleanup residue
+- [ ] 4.5 Implement non-mutating status with none/prepared/validated/committing/conflicted/broken/orphaned/completed states, safe evidence paths, applied/pending targets, locations, review/payload/approval metadata, recovery IDs, and evidence-bound agent-investigation/legal actions
+- [ ] 4.6 Implement abort for uncommitted plans, reject abort after commit state exists with resume or evidence-bound resolve/repair guidance, rotate completed plans out of active slots, and return retained receipts for completed identities
+- [ ] 4.7 Implement cleanup for explicitly owned temporaries, superseded validations, matching marker/capsule residue, receipt-bound quarantines, and receipts older than 30 days while preserving every active, broken, orphaned, or otherwise ambiguous recovery state
+- [ ] 4.8 Implement staged rename-only movement with retryable Windows handle diagnostics and explicit cross-device rejection
+- [ ] 4.9 Implement conflict resolve preparation from captured current content, recovery-candidate scopes, amendment validation/approval, append-only commit amendments, exact resolved-target replacement, stale-evidence rejection, resume, and receipt lineage
+- [ ] 4.10 Implement non-mutating repair previews and evidence-bound execution for reconstruct-plan, resume-source, adopt-destination, quarantine-source-and-adopt-destination, and rebind-destination, including complete effects/cleanup reviews, explicit preconditions, approval tokens, safe basename validation, append-only destination amendments, and preserve-and-stop reporting
+- [ ] 4.11 Add child-process/failpoint recovery tests for interruption before/after capsule publication, each spec replace, conflict amendment, repair publication, quarantine, marker creation, movement, receipt durability, and residue cleanup, plus payload drift, unexpected target content, date rollover, destination conflict/rebind, missed responses, receipt retry, abort, cleanup, one-copy reconstruction, and total-evidence-loss diagnostics
+- [ ] 4.12 Add orphan matrix tests for source-only, destination-only, identical dual locations, foreign destination, missing/foreign marker, matching/disagreeing capsule, damaged primary plan, stale recovery token, changed evidence, insufficient evidence, and every rejected destructive or user-constructed repair path
+- [ ] 4.13 Run atomic replacement, capsule, repair, quarantine, and movement tests on Windows, macOS, and Linux, including sharing violations, mode handling, parent sync support, symlink/path aliases, safe archive basenames, same-filesystem preflight/rename guarantees, and post-write hash failure
 
-## 5. Mutation Lock, Status, Finalize, Abort, Cleanup, and Resume
+## 5. Direct Archive and Skill Integration
 
-- [ ] 5.1 Implement one planning-root mutation lock with owner metadata/token, bounded acquisition, owner-checked release, and explicit crash-repair behavior without age-only stealing
-- [ ] 5.2 Make staged finalize, standalone sync formal commit, direct archive formal mutation, abort, and cleanup use the root mutation lock and recheck relevant base hashes after acquisition
-- [ ] 5.3 Implement non-mutating staged status with none/prepared/validated/committing/completed states, freshness details, applied-target progress, locations, and structured legal actions
-- [ ] 5.4 Require the current validation, recheck source/destination/included-base freshness, preflight every target, and create the validation-bound commit marker only after a conflict-free preflight
-- [ ] 5.5 Classify targets as prepared-base/absence, reviewed-candidate, or conflict and atomically write only prepared-base targets from the current immutable validation snapshot
-- [ ] 5.6 Stop conflicts without overwrite/rollback and return preserved evidence plus actionable status/repair/resume guidance
-- [ ] 5.7 Verify reviewed target hashes and implement staged same-filesystem rename with retryable handle diagnostics and explicit `EXDEV` rejection
-- [ ] 5.8 Recover crash-after-rename only with this plan's matching commit marker, write/retain the completion receipt, and make repeated finalize return the same result
-- [ ] 5.9 Implement abort for uncommitted plans, reject abort after commit start, report receipts for completed plans, and implement bounded root cleanup
-- [ ] 5.10 Add failure/concurrency tests for changed base hashes, partial-write resume, already-applied targets, external conflicts, busy commits, sync/archive serialization, rename retry, missed responses, status, cleanup, and abort boundaries
-- [ ] 5.11 Add Windows/macOS/Linux verification for owner-safe locking, atomic individual replacement, path aliases, sharing violations, same-filesystem rename, and cross-device rejection
+- [ ] 5.1 Route direct archive through deterministic candidates, exact validation/payload snapshots, shared target classification, recovery capsules, atomic writes, commit/amendment records, movement recovery/repair, and receipts while preserving its public interface
+- [ ] 5.2 Implement verified direct copy from a complete `lstat` tree manifest covering regular bytes/hashes, empty directories, modes, and symlink target text without following external links; verify and recheck the source before atomic publication, then remove only an unchanged source
+- [ ] 5.3 Recover direct-copy interruption after publication by preserving both trees when source identity drifts, returning agent-investigation evidence, and failing safely when required symlinks cannot be recreated
+- [ ] 5.4 Prove direct prompts, flags, JSON result fields, delta counts, `--skip-specs`, `--no-validate`, and the established decline-to-skip-specs behavior remain compatible while shared safety invariants remain mandatory
+- [ ] 5.5 Extend sync templates to consume persisted-base normal or recovery `agentWork`, edit only listed candidates, preserve Purpose/unrelated semantics/unmentioned scenarios, apply rename identity before modification, summarize intentional current-content loss during recovery, and leave standalone sync behavior unchanged
+- [ ] 5.6 Rewrite the single archive template to resume status, prepare candidates, inspect complete spec/payload reviews, present exact approval bindings, confirm, finalize, and report partial/conflicted/broken/orphaned/completed state without direct formal or recovery mutation
+- [ ] 5.7 Teach the archive agent to consume CLI-scoped base/reviewed/current/delta and source/destination/marker/capsule/payload evidence, diagnose conflicts and orphaned movement state, run only returned resolve/repair actions, present amendment reviews and repair preconditions in plain language, and require user approval before content- or location-changing recovery
+- [ ] 5.8 Add exact old-CLI capability detection and prove recognized staged failures never fall back to agent-owned formal writes or movement
+- [ ] 5.9 Regenerate archive/sync skills and parity fixtures, then test that templates do not rediscover authority, reconstruct staged/resolve/repair commands, reuse stale approval tokens, silently overwrite or rebase, write formal specs directly, invoke standalone sync during commit, delete recovery evidence, or run archive steps concurrently
 
-## 6. Single Archive and Sync Skill Integration
+## 6. Sequential Bulk, Documentation, and Verification
 
-- [ ] 6.1 Extend sync templates to consume archive `agentWork`, edit only listed candidates, and obtain CLI-prepared candidates/base hashes for standalone sync
-- [ ] 6.2 Rewrite the single archive template to prepare, reconcile candidates, validate an immutable snapshot, present the complete review, confirm, and execute returned structured actions
-- [ ] 6.3 Handle readiness warnings and archive-without-sync by aborting only uncommitted plans and re-preparing with `--skip-specs`
-- [ ] 6.4 Handle retryable finalize/conflict results by accurately reporting applied specs versus active/archived change state and preserving resume guidance
-- [ ] 6.5 Add exact old-CLI capability detection and prove real staged failures never fall back to agent-owned formal writes or moves
-- [ ] 6.6 Implement standalone sync's short CLI-owned mutation-lock commit, all-target base preflight, atomic candidate writes, all-or-no-write conflict behavior, and generated temporary cleanup
-- [ ] 6.7 Regenerate single archive/sync skills, update parity hashes, and test that templates do not rediscover inputs, write formal specs directly, or reconstruct staged commands
-
-## 7. Bulk Archive Integration
-
-- [ ] 7.1 Record an explicit per-change included/excluded capability partition and deterministic dependency/order graph before preparing plans
-- [ ] 7.2 Pass included and excluded capabilities explicitly, use `--skip-specs` for none, compare prepare's complete returned partition, and abort uncommitted plans on discovery drift
-- [ ] 7.3 Run the complete lifecycle sequentially for overlapping included targets so later prepare observes earlier committed specs
-- [ ] 7.4 Allow non-overlapping candidate work/validation independently while formal finalization remains serialized by the root mutation lock
-- [ ] 7.5 Preserve completed/failed/retryable/dependency-skipped/user-skipped/sync-skipped reporting and mixed-schema/move-only behavior
-- [ ] 7.6 Add bulk tests for selection drift, ordering, partial/retryable results, cancellation, mixed schemas, review identity, and fallback; regenerate the bulk skill/parity hash
-
-## 8. Documentation and Verification
-
-- [ ] 8.1 Document staged commands, include/exclude selection, single-plan/current-validation identity, forward-only commit semantics, status, abort boundary, resume actions, and diagnostics
-- [ ] 8.2 Document the shared root mutation lock, standalone sync base-hash behavior, completed-receipt retention, explicit cleanup, ignored-state loss, and manual conflict repair
-- [ ] 8.3 Document that reviewed specs may remain applied while rename fails, including Windows handle-release guidance, unsupported cross-filesystem movement, and commit-bound recovery
-- [ ] 8.4 Update generated help, completion expectations, supported-tool references, and add a changeset
-- [ ] 8.5 Run focused storage/validation/lock/resume/receipt/template/CLI/path suites plus `pnpm build`, `pnpm lint`, the full test suite, and Windows/macOS/Linux CI
-- [ ] 8.6 Run `openspec validate add-staged-archive-workflow --strict` and verify regenerated skills/parity hashes are clean
+- [ ] 6.1 Rewrite bulk archive to establish a stable change order and explicit per-change included/excluded capability partition before mutation
+- [ ] 6.2 Run prepare/reconcile/validate/exact-approval/finalize sequentially for every selected change and compare each prepare result with the inspected partition and intended archive name
+- [ ] 6.3 Preserve completed/failed/conflicted/cancelled/unstarted/skipped reporting and mixed-schema move-only behavior without parallel candidate or commit execution
+- [ ] 6.4 Add bulk tests for ordering, selection/archive-name drift, cancellation, partial completion, conflict stopping, later-change visibility, mixed schemas, approval identity, payload manifest, and legacy fallback
+- [ ] 6.5 Document staged/resolve/repair commands, exact persisted bases, payload review scope, approval tokens, single-writer constraints, forward-only resume and amendments, orphan repair decision matrix, capsule reconstruction and total-evidence-loss boundary, quarantine retention, 30-day receipts and same-name explicit destinations, Windows handle guidance, direct-copy manifests, staged cross-device preflight/limits, the residual simultaneous-writer race, and why any future formal-spec commit gate must also redesign or coordinate standalone sync and other cooperative writers rather than relying on fixed lock expiry or session re-entry
+- [ ] 6.6 Update generated help, completion expectations, supported-tool references, and add a changeset
+- [ ] 6.7 Run focused storage/capsule/validation/approval/resolve/repair/resume/receipt/template/CLI/path suites plus `pnpm build`, `pnpm lint`, the full test suite, and Windows/macOS/Linux CI
+- [ ] 6.8 Run `openspec validate add-staged-archive-workflow --strict` and verify regenerated skills/parity hashes are clean

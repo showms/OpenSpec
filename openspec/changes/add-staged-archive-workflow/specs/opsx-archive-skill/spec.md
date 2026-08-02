@@ -2,19 +2,19 @@
 
 ### Requirement: OPSX Archive Skill
 
-The system SHALL provide an `/opsx:archive` skill that orchestrates a completed change through the staged archive CLI lifecycle.
+The system SHALL provide an `/opsx:archive` skill that sequentially orchestrates a completed change through the single-writer staged archive CLI lifecycle.
 
 #### Scenario: Archive a change with all artifacts complete
 
 - **WHEN** agent executes `/opsx:archive` with a change name
-- **AND** all artifacts and tasks are complete
+- **AND** all artifacts in the schema are complete
+- **AND** all tasks are complete
 - **THEN** the agent SHALL inspect staged status for the change
-- **AND** prepare the archive through `openspec archive <name> --stage prepare --json` only when no staged state exists
-- **AND** consume the returned candidate work without rediscovering archive inputs
-- **AND** reconcile only plan-owned candidates
-- **AND** present the immutable CLI validation review for user approval
-- **AND** delegate formal spec writes and the change move to finalize
-- **AND** display the CLI completion receipt
+- **AND** prepare only when no staged state exists
+- **AND** reconcile only plan-owned candidates returned by prepare
+- **AND** validate and present the complete immutable formal-spec diff, archive payload manifest, and review delivery identity
+- **AND** execute the approval-token-bound finalize action only after user approval
+- **AND** display the CLI completion receipt with the archived location
 
 #### Scenario: Change selection prompt
 
@@ -25,132 +25,218 @@ The system SHALL provide an `/opsx:archive` skill that orchestrates a completed 
 
 #### Scenario: Existing staged state is resumed
 
-- **WHEN** status reports prepared, validated, committing, or completed state
+- **WHEN** staged status reports prepared, validated, committing, conflicted, broken, orphaned, or completed state
 - **THEN** the skill SHALL report that state and follow only its structured legal next actions
-- **AND** SHALL NOT create another plan or inspect internal state files
+- **AND** SHALL NOT create another plan, inspect internal plan files outside returned evidence scopes, or construct replacement staged, resolve, or repair commands
 
 ### Requirement: Artifact Completion Check
 
-The skill SHALL present artifact-completion findings returned by prepare before candidate work.
+The skill SHALL present artifact-completion findings returned by staged prepare before candidate work.
 
 #### Scenario: Incomplete artifacts warning
 
-- **WHEN** prepare reports artifacts other than `done` or `skipped`
-- **THEN** the skill SHALL display the affected artifacts
-- **AND** ask the user whether to continue
+- **WHEN** prepare reports one or more artifacts with status other than `done` or `skipped`
+- **THEN** display a warning listing incomplete artifacts
+- **AND** prompt user for confirmation to continue
+- **AND** proceed if user confirms
 - **AND** abort the uncommitted plan if the user cancels
 
 #### Scenario: All artifacts complete
 
 - **WHEN** prepare reports every artifact as `done` or `skipped`
-- **THEN** the skill SHALL proceed without an artifact warning
+- **THEN** proceed without an artifact warning
 
 ### Requirement: Task Completion Check
 
-The skill SHALL present task-completion findings returned by prepare before candidate work.
+The skill SHALL present task-completion findings returned by staged prepare before candidate work.
 
 #### Scenario: Incomplete tasks found
 
 - **WHEN** prepare reports incomplete tasks
-- **THEN** the skill SHALL display the incomplete count
-- **AND** ask the user whether to continue
+- **THEN** display a warning showing the incomplete count
+- **AND** prompt user for confirmation to continue
+- **AND** proceed if user confirms
 - **AND** abort the uncommitted plan if the user cancels
 
 #### Scenario: All tasks complete
 
 - **WHEN** prepare reports all tasks complete
-- **THEN** the skill SHALL proceed without a task warning
+- **THEN** proceed without a task-related warning
 
-#### Scenario: No tasks output
+#### Scenario: No tasks file
 
 - **WHEN** prepare reports no tasks artifact output
-- **THEN** the skill SHALL proceed without a task warning
+- **THEN** proceed without a task-related warning
 
 ### Requirement: Spec Sync Prompt
 
-The skill SHALL reconcile deltas only into plan-owned candidates and SHALL validate an immutable review snapshot before finalization.
+The skill SHALL reconcile selected delta specs only into staged candidate files and SHALL use CLI validation as the review boundary.
 
-#### Scenario: Prepare returns candidate work
+#### Scenario: Delta specs exist
 
-- **WHEN** prepare returns non-null `agentWork`
-- **THEN** the skill SHALL use its context, guidance, rules, work items, and scopes as the complete sync input
-- **AND** SHALL NOT rerun discovery/instruction commands or inspect the plan manifest
-- **AND** SHALL execute the returned structured validate action after candidate work
+- **WHEN** prepare returns one or more included candidate work items
+- **THEN** the skill SHALL present the complete included/excluded capability partition
+- **AND** prompt the user to proceed with the selected reconciliation scope, archive without syncing, or cancel
+- **AND** if reconciliation is selected, execute archive-supplied candidate sync inline and wait for it to finish
+- **AND** write only paths in the returned write scope
+- **AND** execute the returned validate action after candidate work
+- **AND** make the complete immutable formal-spec diff, payload manifest, review path, hash, byte length, and approval identity available before final approval
+- **AND** stop without finalizing when sync or validation fails
 
-#### Scenario: Prepare returns move-only work
+#### Scenario: No delta specs
 
-- **WHEN** prepare returns `agentWork` as `null`
-- **THEN** the skill SHALL execute the returned validate action without invoking spec sync
+- **WHEN** prepare returns `agentWork: null`
+- **THEN** the skill SHALL proceed to the returned move-only validate action without invoking spec sync
 
-#### Scenario: User excludes selected capabilities
+#### Scenario: User archives without spec reconciliation
 
-- **WHEN** the user requests single-change archive without reconciling one or more discovered capabilities
-- **THEN** the skill SHALL prepare with repeated `--exclude-spec` values for those capabilities
-- **AND** SHALL present the complete included/excluded partition before candidate work
-- **AND** SHALL report excluded deltas as not synced in the final result
-
-#### Scenario: User proceeds with reconciliation
-
-- **WHEN** the user accepts the proposed reconciliation scope
-- **THEN** the skill SHALL run candidate-mode sync inline
-- **AND** write only paths in `agentWork.writeScope`
-- **AND** invoke validate for the selected change
-- **AND** present the complete returned current-validation review before final approval
-- **AND** retain the validation identifier only through the structured finalize action
-
-#### Scenario: User archives without reconciliation
-
-- **WHEN** the user explicitly chooses archive without spec reconciliation
+- **WHEN** the user explicitly chooses archive without syncing selected delta specs
 - **THEN** the skill SHALL abort the uncommitted candidate plan
-- **AND** prepare a new `--skip-specs` plan for the same change
-- **AND** validate and confirm the move-only snapshot before finalize
+- **AND** prepare a new move-only plan with `--skip-specs`
+- **AND** validate and present that move-only review before final approval
+
+#### Scenario: Move-only review contains excluded deltas
+
+- **WHEN** validation returns an empty formal-spec diff for a change that has discovered excluded deltas
+- **THEN** the skill SHALL list every capability that will remain unsynced
+- **AND** present the complete archive payload manifest before asking for approval
+
+#### Scenario: Review is delivered by file
+
+- **WHEN** validation reports `delivery: file`
+- **THEN** the skill SHALL present the review statistics, byte length, hash, and complete review path
+- **AND** use the returned structured read action to inspect the complete file before requesting final approval
+- **AND** present the payload-manifest hash and bind the approval request to the exact path, hash, byte length, delivery mode, and payload manifest represented by the returned approval token
+- **AND** SHALL NOT call a summary or truncated excerpt the complete review
+
+#### Scenario: User declines final staged review
+
+- **WHEN** the user does not approve the current immutable review
+- **THEN** the skill SHALL stop without executing finalize
+- **AND** report that the validated plan remains available through status or can be removed through the returned abort action
+- **AND** SHALL NOT reinterpret the decline as permission to archive without syncing
 
 ### Requirement: Archive Process
 
-The skill SHALL use CLI-owned forward-only finalization and SHALL distinguish applied specs from a completed archive.
+The skill SHALL delegate formal writes and archive movement to the single-writer staged finalizer.
 
 #### Scenario: Successful archive
 
-- **WHEN** the user confirms the immutable validation review
-- **THEN** the skill SHALL execute the returned finalize command and arguments
-- **AND** use the completion receipt as authority for archive name, location, and applied specs
+- **WHEN** the user confirms the current immutable validation review
+- **THEN** the skill SHALL execute the returned finalize command and arguments containing the matching approval token
+- **AND** use the completion receipt as authority for archive name, location, applied specs, skipped specs, warnings, and schema
 - **AND** SHALL NOT independently write main specs or move the change
+- **AND** preserve `.openspec.yaml` through CLI-owned movement
 
-#### Scenario: Finalize is interrupted after spec writes
+#### Scenario: Commit-bound archive destination conflicts
 
-- **WHEN** finalize reports that reviewed specs are applied but the change remains active
-- **THEN** the skill SHALL report that partial forward state accurately
-- **AND** preserve and offer the returned structured resume action
-- **AND** SHALL NOT invoke abort or claim rollback
+- **WHEN** finalize reports `archive_destination_conflict`
+- **THEN** the skill SHALL inspect the returned source, destination, marker, receipt, and commit evidence
+- **AND** explain the likely ownership problem and present safe recovery options
+- **AND** when the source lineage is complete, offer only the returned evidence-bound `rebind-destination` repair with a user-supplied safe archive basename
+- **AND** request explicit user approval before executing that repair
+- **AND** SHALL NOT choose another path itself, overwrite the destination, abort the commit, or perform a direct move
 
-#### Scenario: Finalize reports a target conflict
+#### Scenario: Finalize is interrupted
 
-- **WHEN** finalize finds a target equal to neither its prepared base nor reviewed candidate
-- **THEN** the skill SHALL report the conflicting target
-- **AND** SHALL NOT overwrite it, reconstruct another finalize command, or claim success
+- **WHEN** finalize reports that reviewed specs are partially or fully applied while the change remains active
+- **THEN** the skill SHALL report applied, pending, and movement state accurately
+- **AND** preserve and offer the returned resume action
+- **AND** SHALL NOT claim rollback or completion
 
-#### Scenario: Finalize retry returns a completion receipt
+#### Scenario: Finalize reports a conflict
 
-- **WHEN** a resumed or repeated finalize returns an existing completion receipt
+- **WHEN** finalize reports a target that equals neither its prepared base nor reviewed snapshot
+- **THEN** the skill SHALL consume the returned read-scoped `agentRecovery` evidence package
+- **AND** read and compare the persisted base, immutable reviewed snapshot, current evidence, selected delta, hashes, and relevant plan metadata within the returned scopes
+- **AND** diagnose the semantic difference and likely source of the conflict so the user does not have to compare files or hashes manually
+- **AND** present whether restoring the original review or preserving newer work is safer
+- **AND** execute the returned resolve action to create a plan-owned recovery candidate only after the user selects a direction
+- **AND** reconcile only that recovery candidate, run the returned recovery validate action, present the complete amendment review, and request explicit user approval before recovery finalize
+- **AND** SHALL NOT silently overwrite, write formal specs directly, invoke standalone sync during commit, auto-rebase, invent authority outside the package, or claim success
+
+#### Scenario: Status reports broken or orphaned state
+
+- **WHEN** staged status reports `broken` or `orphaned`
+- **THEN** the skill SHALL inspect only the safe evidence and agent-investigation actions returned by the CLI
+- **AND** correlate plan, source, destination, marker, validation, and receipt identities
+- **AND** explain the most likely failure point and the preconditions of every returned repair option in plain language
+- **AND** after the user selects an option, execute its non-mutating repair preview and present the complete effects, retained evidence, cleanup consequences, and explicit inputs
+- **AND** request approval before executing the returned approval-token-bound reconstruct, resume, adopt, quarantine, or rebind action
+- **AND** SHALL NOT construct a repair command, delete evidence, or treat approval as authority for an action the CLI did not return
+
+#### Scenario: Orphaned source can resume
+
+- **WHEN** status proves that the source payload is current, the destination is absent, and only the marker is missing or foreign
+- **THEN** the skill SHALL explain that `resume-source` preserves any foreign marker and restores only the commit-bound marker
+- **AND** execute the returned repair only after approval
+- **AND** continue through the returned finalize resume action
+
+#### Scenario: Orphaned destination can be adopted
+
+- **WHEN** status proves that the source is absent and the destination exactly matches the reviewed payload and recovery capsule
+- **THEN** the skill SHALL explain that `adopt-destination` records already completed movement rather than moving content again
+- **AND** execute the returned repair only after approval
+- **AND** report completion from its receipt
+
+#### Scenario: Both orphaned locations match
+
+- **WHEN** status proves that source and destination contain the same reviewed lineage
+- **THEN** the skill SHALL explain that the returned repair moves the duplicate source to plan-owned quarantine without deleting it
+- **AND** disclose the retention and later cleanup behavior
+- **AND** execute `quarantine-source-and-adopt-destination` only after approval
+
+#### Scenario: Orphan evidence is insufficient
+
+- **WHEN** status returns only `preserve-and-stop` or reports that all complete recovery copies are missing
+- **THEN** the skill SHALL provide the durable recovery report and explain which proof is missing
+- **AND** SHALL NOT repair, move, delete, overwrite, reconstruct reviewed bytes, or claim completion
+
+#### Scenario: Finalize retry returns a receipt
+
+- **WHEN** a repeated finalize returns an existing or recovered completion receipt
 - **THEN** the skill SHALL report the archive as complete from that receipt
 
-#### Scenario: A validation is superseded
+#### Scenario: Payload changes after review
 
-- **WHEN** candidate work is validated again
-- **THEN** the skill SHALL discard the prior finalize action
-- **AND** SHALL present and retain only the action for the current validation
+- **WHEN** finalize reports `archive_payload_changed` before commit
+- **THEN** the skill SHALL show which archived payload entries changed
+- **AND** execute the returned validate action and request a new approval
+- **AND** SHALL NOT reuse the prior approval token
 
-#### Scenario: Archive destination already exists unexpectedly
+### Requirement: Skill Output
 
-- **WHEN** prepare or finalize reports an unowned existing archive destination
-- **THEN** the skill SHALL report the CLI diagnostic
-- **AND** SHALL NOT choose another path or perform a direct move
+The skill SHALL provide clear staged archive state and completion feedback.
+
+#### Scenario: Archive complete with sync
+
+- **WHEN** archive completes after candidate reconciliation
+- **THEN** display the specs applied from the receipt
+- **AND** display the archive location and schema
+- **AND** display the approved payload-manifest hash and any conflict-resolution amendments
+
+#### Scenario: Archive complete without sync
+
+- **WHEN** archive completes from a move-only validation
+- **THEN** note that discovered delta specs were not synced when applicable
+- **AND** display the archive location and schema
+
+#### Scenario: Archive complete with warnings
+
+- **WHEN** archive completes with readiness warnings
+- **THEN** include the warnings from the completion receipt
+- **AND** suggest review when the archive was completed with incomplete artifacts or tasks
+
+#### Scenario: Single-writer-use notice
+
+- **WHEN** the skill prepares or resumes a staged archive that has not completed
+- **THEN** it SHALL tell the user not to run another archive, standalone sync, or manual formal-spec edit for that planning root until completion or pre-commit abort
 
 ## ADDED Requirements
 
 ### Requirement: Staged CLI Compatibility
 
-The archive skill SHALL remain usable when installed ahead of the CLI version that introduces staged archive.
+The archive skill SHALL distinguish an older CLI from a real staged archive failure.
 
 #### Scenario: CLI supports staged archive
 
@@ -162,10 +248,10 @@ The archive skill SHALL remain usable when installed ahead of the CLI version th
 - **WHEN** the CLI explicitly reports that `--stage` is unsupported
 - **THEN** the skill SHALL announce legacy mode
 - **AND** follow the retained legacy workflow
-- **AND** explain that staged review and resumability are unavailable
+- **AND** explain that immutable staged review and interruption recovery are unavailable
 
 #### Scenario: Supported CLI reports a real failure
 
-- **WHEN** the CLI recognizes staged archive but status or prepare fails
+- **WHEN** the CLI recognizes staged archive but status, prepare, validate, or finalize fails
 - **THEN** the skill SHALL report the failure
-- **AND** SHALL NOT treat it as version skew or fall back to agent-owned formal mutation
+- **AND** SHALL NOT fall back to agent-owned formal writes or movement
