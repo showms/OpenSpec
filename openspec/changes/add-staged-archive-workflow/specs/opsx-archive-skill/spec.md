@@ -2,7 +2,7 @@
 
 ### Requirement: OPSX Archive Skill
 
-The system SHALL provide an `/opsx:archive` skill that sequentially orchestrates a completed change through the single-writer staged archive CLI lifecycle.
+The system SHALL provide an `/opsx:archive` skill that sequentially orchestrates a completed change through the short-locked staged archive CLI lifecycle.
 
 #### Scenario: Archive a change with all artifacts complete
 
@@ -27,7 +27,7 @@ The system SHALL provide an `/opsx:archive` skill that sequentially orchestrates
 
 - **WHEN** staged status reports prepared, validated, committing, conflicted, broken, orphaned, or completed state
 - **THEN** the skill SHALL report that state and follow only its structured legal next actions
-- **AND** SHALL NOT create another plan, inspect internal plan files outside returned evidence scopes, or construct replacement staged, resolve, or repair commands
+- **AND** SHALL NOT create another plan, inspect internal plan files outside returned evidence scopes, or construct replacement staged or repair commands
 
 ### Requirement: Artifact Completion Check
 
@@ -107,6 +107,7 @@ The skill SHALL reconcile selected delta specs only into staged candidate files 
 - **THEN** the skill SHALL present the review statistics, byte length, hash, and complete review path
 - **AND** use the returned structured read action to inspect the complete file before requesting final approval
 - **AND** present the payload-manifest hash and bind the approval request to the exact path, hash, byte length, delivery mode, and payload manifest represented by the returned approval token
+- **AND** explain that this approval covers reviewed spec and payload content but does not bind the final archive date, name, or path
 - **AND** SHALL NOT call a summary or truncated excerpt the complete review
 
 #### Scenario: User declines final staged review
@@ -118,7 +119,7 @@ The skill SHALL reconcile selected delta specs only into staged candidate files 
 
 ### Requirement: Archive Process
 
-The skill SHALL delegate formal writes and archive movement to the single-writer staged finalizer.
+The skill SHALL delegate formal writes and archive movement to the short-locked staged finalizer.
 
 #### Scenario: Successful archive
 
@@ -151,7 +152,7 @@ The skill SHALL delegate formal writes and archive movement to the single-writer
 - **AND** read and compare the persisted base, immutable reviewed snapshot, current evidence, selected delta, hashes, and relevant plan metadata within the returned scopes
 - **AND** diagnose the semantic difference and likely source of the conflict so the user does not have to compare files or hashes manually
 - **AND** present whether restoring the original review or preserving newer work is safer
-- **AND** execute the returned resolve action to create a plan-owned recovery candidate only after the user selects a direction
+- **AND** execute the returned `prepare-spec-conflict-resolution` repair action to create a plan-owned recovery candidate only after the user selects a direction
 - **AND** reconcile only that recovery candidate, run the returned recovery validate action, present the complete amendment review, and request explicit user approval before recovery finalize
 - **AND** SHALL NOT silently overwrite, write formal specs directly, invoke standalone sync during commit, auto-rebase, invent authority outside the package, or claim success
 
@@ -161,9 +162,23 @@ The skill SHALL delegate formal writes and archive movement to the single-writer
 - **THEN** the skill SHALL inspect only the safe evidence and agent-investigation actions returned by the CLI
 - **AND** correlate plan, source, destination, marker, validation, and receipt identities
 - **AND** explain the most likely failure point and the preconditions of every returned repair option in plain language
-- **AND** after the user selects an option, execute its non-mutating repair preview and present the complete effects, retained evidence, cleanup consequences, and explicit inputs
+- **AND** after the user selects an option, execute its repair preview, explain that the preview writes only generated repair-review state, and present the complete effects, retained evidence, cleanup consequences, and explicit inputs
 - **AND** request approval before executing the returned approval-token-bound reconstruct, resume, adopt, quarantine, or rebind action
 - **AND** SHALL NOT construct a repair command, delete evidence, or treat approval as authority for an action the CLI did not return
+
+#### Scenario: Archive commit lock is busy
+
+- **WHEN** finalize reports `archive_commit_busy`
+- **THEN** the skill SHALL report the current archive owner information returned by the CLI
+- **AND** preserve and offer the returned read-only status or retry action
+- **AND** SHALL NOT bypass, delete, age-steal, or reconstruct the lock
+
+#### Scenario: Archive commit lock is abandoned
+
+- **WHEN** status returns an evidence-bound `reclaim-archive-lock` repair decision because the same-host owner process is provably absent
+- **THEN** the skill SHALL explain which invocation left the lock and that reclamation removes only the nonce-bound lock
+- **AND** run the returned repair preview and request explicit user approval before executing lock reclamation
+- **AND** continue only through the returned retry action
 
 #### Scenario: Orphaned source can resume
 
@@ -189,7 +204,7 @@ The skill SHALL delegate formal writes and archive movement to the single-writer
 #### Scenario: Orphan evidence is insufficient
 
 - **WHEN** status returns only `preserve-and-stop` or reports that all complete recovery copies are missing
-- **THEN** the skill SHALL provide the durable recovery report and explain which proof is missing
+- **THEN** the skill SHALL provide the complete read-only recovery report returned by status and explain which proof is missing
 - **AND** SHALL NOT repair, move, delete, overwrite, reconstruct reviewed bytes, or claim completion
 
 #### Scenario: Finalize retry returns a receipt
@@ -227,10 +242,11 @@ The skill SHALL provide clear staged archive state and completion feedback.
 - **THEN** include the warnings from the completion receipt
 - **AND** suggest review when the archive was completed with incomplete artifacts or tasks
 
-#### Scenario: Single-writer-use notice
+#### Scenario: Archive concurrency notice
 
 - **WHEN** the skill prepares or resumes a staged archive that has not completed
-- **THEN** it SHALL tell the user not to run another archive, standalone sync, or manual formal-spec edit for that planning root until completion or pre-commit abort
+- **THEN** it SHALL explain that other direct, staged, and bulk archive commits are serialized by the short-lived planning-root archive lock
+- **AND** tell the user not to run standalone sync or manually edit formal specs for that planning root while finalization is active
 
 ## ADDED Requirements
 

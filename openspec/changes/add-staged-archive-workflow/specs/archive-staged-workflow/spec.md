@@ -105,6 +105,7 @@ The system SHALL bind every finalize action to one complete immutable review of 
 - **AND** store a complete deterministic formal-spec diff plus an exact archive payload path/hash manifest with their hashes, byte length, and per-file statistics
 - **AND** issue an opaque current validation identifier
 - **AND** issue an opaque approval token bound to the validation identifier, complete review delivery metadata, payload-manifest hash, selection, and readiness
+- **AND** SHALL NOT bind that normal validation approval token to the final archive date, name, or path
 - **AND** leave formal specs and the active change unchanged
 
 #### Scenario: Candidate validation fails
@@ -186,9 +187,36 @@ The system SHALL bind every finalize action to one complete immutable review of 
 - **AND** explicitly list discovered capabilities that will remain unsynced
 - **AND** issue a current validation identifier and approval token
 
-### Requirement: Single-writer forward-only finalization
+### Requirement: Short-locked forward-only finalization
 
-The system SHALL finalize a reviewed archive through resumable forward progress rather than rollback, under the documented single-writer usage contract.
+The system SHALL serialize cooperating archive commits for one planning root during their short formal commit windows and finalize through resumable forward progress rather than rollback.
+
+#### Scenario: Finalize acquires the archive commit lock
+
+- **WHEN** staged finalize is ready to perform its authoritative pre-commit checks
+- **THEN** it SHALL exclusively acquire the planning-root archive commit lock before rechecking source, target, readiness, payload, destination, and containment state
+- **AND** hold the lock through formal-spec writes, movement, durable receipt publication, and the current invocation's matching generated cleanup
+- **AND** SHALL NOT hold the lock during prepare, candidate reconciliation, validation review, or user approval
+
+#### Scenario: Another archive commit holds the lock
+
+- **WHEN** direct archive, staged finalize, or a bulk archive item finds the planning-root archive commit lock owned by another invocation
+- **THEN** it SHALL fail with `archive_commit_busy`
+- **AND** return the observed owner information and a read-only status action
+- **AND** SHALL NOT begin or resume formal mutation
+
+#### Scenario: A live finalize attempt returns before completion
+
+- **WHEN** finalize returns a retryable movement error, conflict, or another incomplete result without process termination
+- **THEN** it SHALL release only the archive commit lock whose invocation nonce it owns
+- **AND** preserve all durable commit evidence for a later lock-acquiring retry
+
+#### Scenario: A process leaves an abandoned archive lock
+
+- **WHEN** status observes an archive commit lock whose same-host owner process is provably absent
+- **THEN** status SHALL report the lock as read-only evidence and return an evidence-bound `reclaim-archive-lock` repair decision
+- **AND** cleanup and finalize SHALL NOT remove or age-steal that lock
+- **AND** only an explicitly approved repair whose evidence remains current MAY remove the exact nonce-bound lock
 
 #### Scenario: Finalize starts a reviewed commit
 
@@ -200,6 +228,7 @@ The system SHALL finalize a reviewed archive through resumable forward progress 
 - **AND** current artifact and task readiness has been recalculated and accepted
 - **AND** the archive destination is available
 - **THEN** finalize SHALL bind the local archive date, final destination, validation identifier, approval identity, reviewed and payload hashes, and commit token before writing formal specs
+- **AND** the final destination SHALL be recorded as execution state rather than as part of the normal validation approval binding
 - **AND** publish a complete matching source-local recovery capsule before the first formal-spec replacement
 - **AND** preserve an existing valid date prefix on the change name
 
@@ -239,7 +268,7 @@ The system SHALL finalize a reviewed archive through resumable forward progress 
 - **AND** return a read-scoped `agentRecovery` evidence package containing the selected delta, relevant plan metadata, explicit safe scopes, and those three evidence versions
 - **AND** the archive agent SHALL diagnose the semantic difference and present recovery options to the user
 - **AND** user approval SHALL be required before any content-changing recovery action
-- **AND** the CLI SHALL return an evidence-bound resolve action for creating a plan-owned recovery candidate
+- **AND** the CLI SHALL return an evidence-bound `prepare-spec-conflict-resolution` repair decision for creating a plan-owned recovery candidate
 - **AND** the CLI and agent SHALL NOT silently rebase, overwrite, roll back, invoke standalone sync during commit, or claim success
 
 #### Scenario: Process stops after some target writes
@@ -261,16 +290,30 @@ The system SHALL finalize a reviewed archive through resumable forward progress 
 - **AND** normal finalize SHALL NOT abort the commit, choose an alternate destination, overwrite the occupant, or move the source
 - **AND** return evidence and a structured repair action that can rebind only to an explicit user-supplied empty destination
 
-### Requirement: Reviewed conflict resolution
+### Requirement: Repair-driven reviewed conflict resolution
 
-The system SHALL resolve a post-commit formal-spec conflict through a new immutable amendment review without giving the agent direct formal-spec write authority.
+The system SHALL begin persistent post-commit formal-spec conflict recovery only through explicit repair and apply it through a new immutable amendment review without giving the agent direct formal-spec write authority.
 
-#### Scenario: Resolve prepares recovery candidate work
+#### Scenario: Status reports conflict recovery without persisting it
 
-- **WHEN** a conflicted plan receives its current evidence-bound resolve action
-- **THEN** the system SHALL create one plan-owned recovery candidate initialized from the captured current target
+- **WHEN** status observes a stable conflicted target
+- **THEN** it SHALL derive a recovery identifier from the canonical current evidence
+- **AND** return the `prepare-spec-conflict-resolution` repair decision
+- **AND** SHALL NOT create a recovery directory, review, candidate, or pointer
+
+#### Scenario: Repair prepares recovery candidate work
+
+- **WHEN** explicit repair receives the current evidence-derived recovery identifier and `prepare-spec-conflict-resolution` decision
+- **THEN** it SHALL recompute and match the canonical evidence before persisting recovery state
+- **AND** create one plan-owned recovery candidate initialized from the captured current target
 - **AND** return the persisted original base, original reviewed snapshot, captured current target, selected delta, rules, and explicit recovery read/write scopes
 - **AND** SHALL NOT modify the formal target, other reviewed targets, or active change
+
+#### Scenario: Conflict-repair preparation is repeated
+
+- **WHEN** `prepare-spec-conflict-resolution` is repeated with the same current recovery identifier after its repair record and candidate exist
+- **THEN** repair SHALL return the existing recovery work and current legal next action
+- **AND** SHALL NOT reinitialize or overwrite an edited recovery candidate
 
 #### Scenario: Recovery candidate is validated
 
@@ -291,7 +334,7 @@ The system SHALL resolve a post-commit formal-spec conflict through a new immuta
 
 - **WHEN** the captured current target, payload manifest, source authority, or recovery candidate changes after recovery validation
 - **THEN** the system SHALL reject the recovery approval as stale
-- **AND** preserve the latest current bytes and require a new resolve or validate action as appropriate
+- **AND** preserve the latest current bytes and require a new status, repair, or validate action as appropriate
 
 ### Requirement: Archive movement and completion recovery
 
@@ -360,10 +403,24 @@ The system SHALL preserve ambiguous recovery evidence and perform only explicitl
 
 #### Scenario: Repair decision is previewed
 
-- **WHEN** a caller selects one currently allowed repair decision and supplies every required explicit input without an approval token
-- **THEN** repair SHALL remain non-mutating
-- **AND** persist a complete repair review containing the evidence manifest, decision, effects, retained evidence, cleanup consequences, and explicit inputs
+- **WHEN** a caller selects one currently allowed repair decision other than `prepare-spec-conflict-resolution` and supplies every required explicit input without an approval token
+- **THEN** repair SHALL recompute the canonical evidence and require the supplied recovery identifier to match
+- **AND** leave formal specs and archive locations unchanged
+- **AND** begin persistent recovery state by writing a complete repair review containing the evidence manifest, decision, effects, retained evidence, cleanup consequences, and explicit inputs
 - **AND** return an approval token and exact execution action bound to that repair review
+
+#### Scenario: Abandoned archive commit lock is reclaimed
+
+- **WHEN** the current evidence proves that an archive commit lock belongs to the selected root and its recorded same-host owner process is absent
+- **THEN** an approved `reclaim-archive-lock` repair SHALL remove only the exact nonce-bound lock
+- **AND** return the normal status or finalize retry action
+- **AND** SHALL NOT use lock age alone as removal authority
+
+#### Scenario: Archive commit lock ownership is uncertain
+
+- **WHEN** the recorded lock owner appears live, belongs to another or unknown host, cannot be checked because of permissions, is malformed, or changes during repair
+- **THEN** repair SHALL preserve the lock and all commit evidence
+- **AND** return `preserve-and-stop` or a fresh status action
 
 #### Scenario: Primary plan is reconstructed
 
@@ -403,8 +460,8 @@ The system SHALL preserve ambiguous recovery evidence and perform only explicitl
 #### Scenario: Repair evidence is insufficient or stale
 
 - **WHEN** no repair preconditions can be proven or any bound evidence changes after status
-- **THEN** repair SHALL preserve every source, destination, plan, capsule, marker, receipt, and formal target
-- **AND** return `preserve-and-stop` with a durable recovery report or a fresh status action
+- **THEN** repair SHALL preserve every source, destination, plan, capsule, marker, receipt, archive lock, and formal target
+- **AND** return `preserve-and-stop` with a complete recovery report in the response or a fresh status action
 - **AND** SHALL NOT combine disagreeing lineages, adopt similar content, or use confirmation as a substitute for missing evidence
 
 #### Scenario: Every recovery copy is missing
@@ -422,7 +479,26 @@ The system SHALL expose recovery state by change name and preserve commit eviden
 
 - **WHEN** a user requests staged status
 - **THEN** the system SHALL report `none`, `prepared`, `validated`, `committing`, `conflicted`, `broken`, `orphaned`, or `completed`
-- **AND** include the immutable plan identifier, current validation and approval binding when applicable, review delivery, payload-manifest hash, included/excluded capabilities, applied and pending targets, locations, diagnostics, evidence paths, and structured legal next actions
+- **AND** include the immutable plan identifier, current validation and approval binding when applicable, review delivery, payload-manifest hash, included/excluded capabilities, applied and pending targets, locations, archive-lock evidence, diagnostics, evidence paths, and structured legal next actions
+
+#### Scenario: Status remains completely read-only
+
+- **WHEN** status inspects healthy, conflicted, broken, orphaned, completed, or archive-lock evidence
+- **THEN** it SHALL NOT create a directory, snapshot evidence, create a recovery or repair record, advance or repair a pointer, update a timestamp, rotate a plan, remove residue, or otherwise modify staged, formal, source, or destination state
+
+#### Scenario: Status derives a canonical recovery identifier
+
+- **WHEN** stable evidence supports one or more repair decisions
+- **THEN** status SHALL construct a versioned canonical evidence document in memory using normalized root-relative paths, typed entries, stable parse results and content hashes, and deterministic lexical ordering
+- **AND** derive the recovery identifier as `recovery-v1-` followed by the lowercase SHA-256 digest of the canonical UTF-8 JSON bytes
+- **AND** exclude volatile scan times, mtimes, absolute display paths, and diagnostic prose from that digest
+- **AND** SHALL NOT persist the canonical evidence document
+
+#### Scenario: Evidence changes during status
+
+- **WHEN** relevant evidence changes or cannot be read consistently while status constructs the canonical document
+- **THEN** status SHALL return `archive_evidence_unstable`
+- **AND** SHALL NOT return a recovery identifier, persist recovery state, or offer a mutating repair execution action
 
 #### Scenario: Active change name has only historical receipts
 
@@ -463,33 +539,40 @@ The system SHALL expose recovery state by change name and preserve commit eviden
 - **WHEN** root-level cleanup encounters recognized superseded validations, abandoned generated temporaries, receipt-bound marker or capsule residue, quarantined duplicate sources past their receipt-bound retention, or completed receipts older than 30 days
 - **THEN** it SHALL remove only those explicitly owned paths
 - **AND** report what was removed
+- **AND** SHALL NOT remove or age-steal an archive commit lock
 
 #### Scenario: Cleanup encounters active recovery state
 
 - **WHEN** cleanup encounters a prepared, validated, committing, conflicted, broken, or orphaned plan
 - **THEN** it SHALL report and preserve that plan
 
-### Requirement: Single-writer usage contract
+### Requirement: Archive concurrency boundary
 
-The system SHALL describe staged archive as requiring single-writer use and SHALL NOT claim that finalize or the planning root is protected by a writer lock.
+The system SHALL accurately describe the short-lived archive commit lock and the formal-spec writers that remain outside it.
 
 #### Scenario: Normal staged operation
 
 - **WHEN** a staged archive lifecycle is active
 - **THEN** generated skills SHALL wait for each command to finish before starting the next
-- **AND** SHALL instruct the user not to run another archive, standalone sync, or manual formal-spec edit until finalization finishes or the uncommitted plan is aborted
+- **AND** SHALL instruct the user not to run standalone sync or manually edit formal specs while finalization is active
 
-#### Scenario: No locking guarantee
+#### Scenario: Archive commit serialization guarantee
 
 - **WHEN** staged archive explains its concurrency boundary
-- **THEN** it SHALL state that this workflow does not provide a finalize, process, lease, session-owned, time-based, or planning-root writer lock
-- **AND** SHALL describe concurrent archive, standalone sync, and manual formal-spec writes as unsupported
-- **AND** SHALL describe hash drift checks as detection rather than mutual exclusion
-- **AND** SHALL NOT claim that every simultaneous-preflight or last-writer race is prevented
+- **THEN** it SHALL state that direct archive, staged finalize, and bulk archive items use one short-lived planning-root archive commit lock
+- **AND** state that two cooperating archive commits cannot pass authoritative final preflight together
+- **AND** state that prepare, reconciliation, validation review, and user approval happen outside the lock
+
+#### Scenario: External formal-spec writers remain outside the lock
+
+- **WHEN** staged archive explains standalone sync or manual formal-spec editing
+- **THEN** it SHALL describe those writers as unsupported during finalization and not serialized by the archive commit lock
+- **AND** describe hash drift checks as detection rather than mutual exclusion for those writers
+- **AND** SHALL NOT claim that every external last-writer race is prevented
 
 #### Scenario: Unexpected external change is detected
 
-- **WHEN** a recorded source or target changes outside the supported single-writer workflow
+- **WHEN** a recorded source or target changes through standalone sync, manual editing, or another writer outside the archive commit lock
 - **THEN** the system SHALL report stale or conflicted state according to whether commit has begun
 - **AND** SHALL NOT describe the workflow as an all-or-nothing transaction
 

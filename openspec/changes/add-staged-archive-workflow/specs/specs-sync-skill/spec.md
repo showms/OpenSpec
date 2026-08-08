@@ -75,4 +75,5 @@ The specs sync skill SHALL support archive-supplied candidate work that keeps se
 
 - **WHEN** a user invokes `/opsx:sync` without archive-supplied candidate work
 - **THEN** sync SHALL retain its existing formal reconciliation and user-facing summary
-- **AND** SHALL NOT claim participation in staged archive state or concurrent-writer coordination
+- **AND** SHALL NOT claim participation in staged archive state, the archive commit lock, or concurrent-writer coordination
+- **AND** SHALL describe concurrent use with archive finalization as unsupported

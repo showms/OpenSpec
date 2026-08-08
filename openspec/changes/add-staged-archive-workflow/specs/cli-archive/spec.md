@@ -2,7 +2,7 @@
 
 ### Requirement: Staged archive command surface
 
-The archive command SHALL expose prepare, status, validate, finalize, resolve, repair, abort, and cleanup operations through the existing command surface.
+The archive command SHALL expose prepare, status, validate, finalize, repair, abort, and cleanup operations through the existing command surface.
 
 #### Scenario: Prepare stage
 
@@ -14,7 +14,7 @@ The archive command SHALL expose prepare, status, validate, finalize, resolve, r
 
 - **WHEN** a user runs `openspec archive <change> --stage status`
 - **THEN** the command SHALL return the derived current state and structured legal next actions
-- **AND** SHALL NOT mutate staged or formal state
+- **AND** SHALL NOT create, update, move, or delete any staged, recovery, repair, formal, source, destination, or cleanup state
 
 #### Scenario: Status finds damaged recovery state
 
@@ -22,6 +22,19 @@ The archive command SHALL expose prepare, status, validate, finalize, resolve, r
 - **THEN** the command SHALL return `broken` or `orphaned` as appropriate
 - **AND** expose only safe evidence paths and structured agent-investigation actions
 - **AND** SHALL NOT infer progress, delete evidence, or mutate formal state
+
+#### Scenario: Status derives a recovery identifier
+
+- **WHEN** stable observed evidence supports a repair decision
+- **THEN** the command SHALL construct a versioned canonical evidence document in memory
+- **AND** return `recovery-v1-` followed by the lowercase SHA-256 digest of its canonical UTF-8 JSON bytes
+- **AND** SHALL NOT persist that document or any recovery state
+
+#### Scenario: Status evidence is unstable
+
+- **WHEN** relevant evidence changes or cannot be read consistently during status
+- **THEN** the command SHALL return `archive_evidence_unstable`
+- **AND** SHALL NOT return a recovery identifier or mutating repair execution action
 
 #### Scenario: Validate stage
 
@@ -35,17 +48,18 @@ The archive command SHALL expose prepare, status, validate, finalize, resolve, r
 - **THEN** the command SHALL finalize only the current immutable validation
 - **AND** return a completion receipt, resumable status, or actionable conflict diagnostic
 
-#### Scenario: Resolve stage
-
-- **WHEN** a user runs `openspec archive <change> --stage resolve --recovery <id>` for the current conflict
-- **THEN** the command SHALL prepare or return plan-owned recovery candidate work and its structured recovery validate action
-- **AND** SHALL NOT modify the formal target, other reviewed targets, or active change
-
 #### Scenario: Repair stage
 
 - **WHEN** a user runs `openspec archive <change> --stage repair --recovery <id> --resolution <decision> --approval <token>` with required confirmation
 - **THEN** the command SHALL execute only the evidence-bound repair decision returned by current status
 - **AND** return reconstructed status, a normal resume action, a completion receipt, or a stale-evidence diagnostic
+
+#### Scenario: Repair starts persistent conflict recovery
+
+- **WHEN** a user runs `openspec archive <change> --stage repair --recovery <id> --resolution prepare-spec-conflict-resolution` for current conflict evidence
+- **THEN** the command SHALL recompute and match the evidence-derived recovery identifier before creating the repair review and plan-owned recovery candidate
+- **AND** return its explicit scopes and structured recovery validate action
+- **AND** SHALL NOT modify the formal target, other reviewed targets, or active change
 
 #### Scenario: Abort stage
 
@@ -57,6 +71,7 @@ The archive command SHALL expose prepare, status, validate, finalize, resolve, r
 - **WHEN** a user runs `openspec archive --stage cleanup`
 - **THEN** the command SHALL remove only recognized disposable staged state
 - **AND** preserve every active recovery plan
+- **AND** SHALL NOT remove or age-steal an archive commit lock
 
 ### Requirement: Prepare selection contract
 
@@ -134,6 +149,7 @@ The archive command SHALL make the complete current review available while bound
 
 - **WHEN** the complete review is within the documented inline byte limit
 - **THEN** JSON SHALL include the complete formal-spec diff and payload-manifest review body, path, hash, byte length, payload-manifest hash, statistics, validation identifier, approval token, and finalize action
+- **AND** the normal validation approval token SHALL bind the reviewed content and delivery identity but not the final archive date, name, or path
 
 #### Scenario: Review is delivered by file
 
@@ -201,11 +217,32 @@ The archive command SHALL keep staged review approval separate from the establis
 #### Scenario: Staged finalize is preconfirmed
 
 - **WHEN** staged finalize receives `--yes`, the current validation identifier, and its bound approval token
-- **THEN** it SHALL skip the interactive prompt and continue through current pre-commit checks
+- **THEN** it SHALL skip the interactive prompt and continue through current destination selection and pre-commit checks
+- **AND** a local-date destination change alone SHALL NOT invalidate the content approval token
 
-### Requirement: Resumable finalize contract
+### Requirement: Short-locked resumable finalize contract
 
-The archive command SHALL make a single-writer staged finalize safe to retry after interruption.
+The archive command SHALL serialize cooperating archive commits during authoritative preflight and formal mutation while keeping staged finalize safe to retry after interruption.
+
+#### Scenario: Finalize acquires the planning-root archive lock
+
+- **WHEN** direct archive, staged finalize, or a bulk archive item reaches authoritative final preflight
+- **THEN** it SHALL exclusively acquire the shared planning-root archive commit lock
+- **AND** hold it through formal-spec writes, movement, durable receipt publication, and matching generated cleanup for that invocation
+- **AND** SHALL NOT hold it during prepare, candidate reconciliation, review, or user approval
+
+#### Scenario: Archive commit lock is busy
+
+- **WHEN** another archive invocation owns the planning-root archive commit lock
+- **THEN** the command SHALL fail with `archive_commit_busy`
+- **AND** return read-only owner evidence and a status action
+- **AND** SHALL NOT begin or resume formal mutation
+
+#### Scenario: Finalize exits without completion
+
+- **WHEN** a live finalize invocation returns a retryable or conflicted result
+- **THEN** it SHALL release only its own nonce-bound archive commit lock
+- **AND** preserve durable commit state for the next lock-acquiring retry
 
 #### Scenario: Finalize receives stale inputs before commit
 
@@ -226,7 +263,7 @@ The archive command SHALL make a single-writer staged finalize safe to retry aft
 - **THEN** finalize SHALL fail with `archive_commit_conflict`
 - **AND** preserve and snapshot the current target
 - **AND** return status plus a read-scoped `agentRecovery` evidence package containing the persisted base, reviewed snapshot, current evidence, selected delta, hashes, relevant plan metadata, and explicit safe scopes
-- **AND** return an evidence-bound resolve action for plan-owned recovery candidate work
+- **AND** return an evidence-bound `prepare-spec-conflict-resolution` repair decision for plan-owned recovery candidate work
 - **AND** SHALL NOT offer a silent overwrite, automatic rebase, rollback, direct formal write, or standalone-sync action
 
 #### Scenario: Bound destination conflicts after commit starts
@@ -281,15 +318,22 @@ The archive command SHALL make a single-writer staged finalize safe to retry aft
 - **AND** return the abort-and-prepare action for an explicit `--archive-name`
 - **AND** SHALL NOT infer which historical receipt or destination the caller intended
 
-### Requirement: Evidence-bound resolve and repair contract
+### Requirement: Evidence-bound recovery and repair contract
 
-The archive command SHALL expose conflict resolution and orphan repair as structured, stale-safe actions rather than user-constructed filesystem commands.
+The archive command SHALL keep status read-only and begin persistent conflict resolution, lock reclamation, and orphan repair only through structured, stale-safe repair actions rather than user-constructed filesystem commands.
 
-#### Scenario: Resolve returns candidate work
+#### Scenario: Status returns canonical conflict evidence
 
-- **WHEN** the current conflict receives `--stage resolve --recovery <id>`
-- **THEN** JSON SHALL return the original base, original review, captured current target, selected delta, plan-owned recovery candidate, explicit scopes, and structured recovery validate action
+- **WHEN** read-only status observes stable conflict evidence
+- **THEN** JSON SHALL return the original base, original review, captured current target, selected delta, explicit safe read scope, an evidence-derived recovery identifier, and the `prepare-spec-conflict-resolution` repair decision
+- **AND** SHALL NOT create a repair record, recovery candidate, or mutable pointer
+
+#### Scenario: Repair returns conflict candidate work
+
+- **WHEN** repair receives the current evidence-derived recovery identifier and `prepare-spec-conflict-resolution` decision
+- **THEN** it SHALL recompute the evidence, persist the first repair review, create the plan-owned recovery candidate, and return explicit scopes plus the structured recovery validate action
 - **AND** omit internal mutable authority and unrelated plan files
+- **AND** leave the formal target and archive locations unchanged
 
 #### Scenario: Recovery validation succeeds
 
@@ -299,15 +343,17 @@ The archive command SHALL expose conflict resolution and orphan repair as struct
 
 #### Scenario: Repair action is current
 
-- **WHEN** repair receives the current recovery ID, listed decision, and all required explicit inputs without an approval token
-- **THEN** it SHALL persist and return a non-mutating complete repair review plus an approval token and exact execution action
+- **WHEN** repair receives the current recovery ID, a listed decision other than `prepare-spec-conflict-resolution`, and all required explicit inputs without an approval token
+- **THEN** it SHALL recompute and match the canonical evidence
+- **AND** persist and return a complete repair review plus an approval token and exact execution action
+- **AND** leave formal specs and archive locations unchanged during that preview
 - **AND** bind the token to the evidence manifest, decision, effects, cleanup consequences, and explicit inputs
 
 #### Scenario: Approved repair action is current
 
 - **WHEN** repair receives the exact returned execution action with its evidence-bound approval token and required confirmation
 - **THEN** it SHALL recheck the complete evidence manifest immediately before mutation
-- **AND** execute only `reconstruct-plan`, `resume-source`, `adopt-destination`, `quarantine-source-and-adopt-destination`, or `rebind-destination` when that action's preconditions remain true
+- **AND** execute only `reconstruct-plan`, `reclaim-archive-lock`, `resume-source`, `adopt-destination`, `quarantine-source-and-adopt-destination`, or `rebind-destination` when that action's preconditions remain true
 
 #### Scenario: Repair action is stale or unsupported
 
@@ -323,13 +369,24 @@ The archive command SHALL expose conflict resolution and orphan repair as struct
 - **AND** return the normal finalize resume action
 - **AND** SHALL NOT modify the occupant at the old destination
 
+#### Scenario: Abandoned archive lock is reclaimed
+
+- **WHEN** current canonical evidence proves that the nonce-bound archive commit lock belongs to this root and its recorded same-host owner process is absent
+- **THEN** approved `reclaim-archive-lock` repair SHALL remove only that lock and return the normal retry action
+- **AND** lock age alone SHALL NOT authorize removal
+
+#### Scenario: Archive lock ownership cannot be proven abandoned
+
+- **WHEN** the lock owner appears live, is on another or unknown host, cannot be checked, is malformed, or changes during repair
+- **THEN** repair SHALL preserve the lock and fail closed with `archive_repair_not_allowed` or `archive_recovery_stale`
+
 ### Requirement: Staged archive option validation
 
 The archive command SHALL reject ambiguous or unsupported staged option combinations before formal mutation.
 
 #### Scenario: Change-bound stage omits a change
 
-- **WHEN** prepare, status, validate, finalize, resolve, repair, or abort is requested without a change name
+- **WHEN** prepare, status, validate, finalize, repair, or abort is requested without a change name
 - **THEN** the command SHALL fail with an actionable missing-change diagnostic
 
 #### Scenario: Cleanup receives a change
@@ -337,10 +394,15 @@ The archive command SHALL reject ambiguous or unsupported staged option combinat
 - **WHEN** root-level cleanup receives a change name
 - **THEN** the command SHALL reject the unsupported combination
 
-#### Scenario: Identifier is malformed
+#### Scenario: Validation identifier is malformed
 
-- **WHEN** a caller supplies a validation or recovery identifier outside the generated lowercase UUID form
-- **THEN** the command SHALL reject it before resolving a validation, resolution, repair, or evidence path
+- **WHEN** a caller supplies a validation identifier outside the generated lowercase UUID form
+- **THEN** the command SHALL reject it before resolving a validation path
+
+#### Scenario: Recovery identifier is malformed
+
+- **WHEN** a caller supplies a recovery identifier outside `recovery-v1-` followed by 64 lowercase hexadecimal characters
+- **THEN** the command SHALL reject it before reading or creating repair state
 
 #### Scenario: Staged archive requests no-validate
 
@@ -354,7 +416,7 @@ The archive command SHALL reject ambiguous or unsupported staged option combinat
 
 #### Scenario: Non-prepare stage receives selection
 
-- **WHEN** status, validate, finalize, resolve, repair, abort, or cleanup receives include, exclude, or skip selection
+- **WHEN** status, validate, finalize, repair, abort, or cleanup receives include, exclude, or skip selection
 - **THEN** the command SHALL reject the combination
 
 #### Scenario: Finalize omits validation identity
@@ -367,9 +429,9 @@ The archive command SHALL reject ambiguous or unsupported staged option combinat
 - **WHEN** finalize is requested without `--approval` or with a token not bound to the current validation and recovery lineage
 - **THEN** the command SHALL fail with `archive_approval_required` or `archive_approval_mismatch`
 
-#### Scenario: Resolve or repair omits recovery identity
+#### Scenario: Repair omits recovery identity
 
-- **WHEN** resolve or repair is requested without `--recovery`
+- **WHEN** repair is requested without `--recovery`
 - **THEN** the command SHALL fail with `archive_recovery_required`
 
 #### Scenario: Repair receives invalid resolution options
@@ -379,7 +441,7 @@ The archive command SHALL reject ambiguous or unsupported staged option combinat
 
 #### Scenario: Stage receives approval outside execution
 
-- **WHEN** prepare, status, validate, resolve, abort, cleanup, or a repair invocation that does not exactly match a returned execution action receives `--approval`
+- **WHEN** prepare, status, validate, abort, cleanup, or a repair invocation that does not exactly match a returned execution action receives `--approval`
 - **THEN** the command SHALL reject the combination
 
 #### Scenario: Stage receives recovery outside recovery flow
@@ -389,12 +451,12 @@ The archive command SHALL reject ambiguous or unsupported staged option combinat
 
 #### Scenario: Non-repair stage receives resolution
 
-- **WHEN** prepare, status, validate, finalize, resolve, abort, or cleanup receives `--resolution`
+- **WHEN** prepare, status, validate, finalize, abort, or cleanup receives `--resolution`
 - **THEN** the command SHALL reject the combination
 
 #### Scenario: Non-prepare stage receives archive name
 
-- **WHEN** status, validate, finalize, resolve, abort, cleanup, or a non-rebind repair receives `--archive-name`
+- **WHEN** status, validate, finalize, abort, cleanup, or a non-rebind repair receives `--archive-name`
 - **THEN** the command SHALL reject the combination
 
 #### Scenario: Direct archive receives staged-only options
@@ -410,32 +472,33 @@ The archive command SHALL reject ambiguous or unsupported staged option combinat
 
 #### Scenario: JSON mutating repair lacks confirmation
 
-- **WHEN** JSON repair would reconstruct, publish, quarantine, adopt, or rebind state without `--yes`
+- **WHEN** JSON repair would reconstruct, reclaim an archive lock, publish, quarantine, adopt, or rebind state without `--yes`
 - **THEN** the command SHALL fail with `archive_confirmation_required`
 - **AND** preserve all recovery evidence
 
-### Requirement: Single-writer archive usage
+### Requirement: Archive commit concurrency boundary
 
-The archive command SHALL communicate that staged finalization requires single-writer use rather than providing a concurrent transaction or writer lock.
+The archive command SHALL communicate the guarantee of its short-lived planning-root archive commit lock and the writers that remain outside it.
 
 #### Scenario: Status reports an active commit
 
 - **WHEN** status reports committing or conflicted state
-- **THEN** the response SHALL instruct the caller not to start another archive, standalone sync, or manual formal-spec edit for the selected root
-- **AND** return only resume, evidence-bound resolve/repair, or non-mutating agent-investigation actions
+- **THEN** the response SHALL explain that another archive commit will be rejected while the lock is held
+- **AND** instruct the caller not to run standalone sync or manually edit formal specs for the selected root
+- **AND** return only resume, evidence-bound repair, or read-only agent-investigation actions
 
-#### Scenario: Command describes the no-lock boundary
+#### Scenario: Command describes the archive-lock boundary
 
 - **WHEN** help, status, or a staged diagnostic describes finalization safety
-- **THEN** the command SHALL state that it does not provide a finalize, process, lease, session-owned, time-based, or planning-root writer lock
-- **AND** SHALL identify concurrent formal-spec writers as unsupported
-- **AND** SHALL NOT present source or target hash checks as mutual exclusion
+- **THEN** the command SHALL state that direct, staged, and bulk archive commits use one short-lived planning-root lock from authoritative preflight through durable receipt publication
+- **AND** SHALL state that standalone sync and manual formal-spec edits do not participate in that lock
+- **AND** SHALL NOT present source or target hash checks as mutual exclusion for those external writers
 
 #### Scenario: Unexpected drift is observed
 
 - **WHEN** the command detects a source or target change outside the staged lifecycle
 - **THEN** it SHALL report stale or conflicted state
-- **AND** SHALL NOT claim that unrelated concurrent writers were serialized
+- **AND** SHALL NOT claim that standalone sync or manual writers were serialized
 
 ### Requirement: Direct archive compatibility
 
@@ -445,7 +508,7 @@ The archive command SHALL preserve its existing direct interface while sharing s
 
 - **WHEN** a user runs `openspec archive <change>` without `--stage`
 - **THEN** existing positional arguments, flags, prompts, JSON result fields, and delta-application meanings SHALL remain available
-- **AND** deterministic candidates and archive payload SHALL pass through exact snapshotting, target classification, recovery capsules, atomic writes, movement recovery/repair, and completion receipts
+- **AND** deterministic candidates and archive payload SHALL pass through the shared archive commit lock, exact snapshotting, target classification, recovery capsules, atomic writes, movement recovery/repair, and completion receipts
 
 #### Scenario: Direct archive skips optional validation
 
